@@ -166,18 +166,16 @@ class AF3HaddockPipeline:
         
         # Find the predicted structure file (typically ranked_0.pdb or similar)
         af3_dir_path = Path(af3_output_dir)
-        pdb_files = list(af3_dir_path.glob("*.pdb"))
+        structure_file = list(af3_dir_path.glob("*.pdb"))
         
-        if not pdb_files:
+        if not structure_file:
             raise FileNotFoundError(f"No PDB files found in {af3_output_dir}")
         
-        # Use the first/best ranked structure
-        structure_file = sorted(pdb_files)[0]
+        # Get AF3 PDB file
         logger.info(f"Using structure: {structure_file}")
         
-        # Extract ligand (heteroatoms)
-        pdb_dir = structure_file.parent
-        ligand_pdb = pdb_dir / f"{ligand_name}.pdb"
+        # Extract ligand
+        ligand_pdb = self.ligand_dir / f"{ligand_name}.pdb"
         parser = PDBParser(QUIET=True)
         structure = parser.get_structure("protein_structure", str(structure_file))
 
@@ -283,7 +281,7 @@ class AF3HaddockPipeline:
         logger.info("Chemistry properties calculated")
         return properties
     
-    def run_haddock3(self, protein_pdb: str, ligand_pdb: str, 
+    def run_haddock3(self, protein_pdb: str, output_dir: str, 
                      topology_files: Dict[str, str]) -> Dict[str, float]:
         """
         Run HADDOCK3 docking (placeholder for custom implementation)
@@ -300,7 +298,7 @@ class AF3HaddockPipeline:
         
         cfg_body = f'''
         ## Docked protein complex scoring
-        run_dir = "run0"
+        run_dir = "{output_dir}"
         mode = "local"
         ncores = {8}
         molecules =  [
@@ -328,7 +326,7 @@ class AF3HaddockPipeline:
                 capture_output=True, text=True, check=True
             )
 
-            capri_file = pdb_dir / "run0/analysis/1_mdscoring_analysis/capri_ss.tsv"
+            capri_file = output_dir / "run0/analysis/1_mdscoring_analysis/capri_ss.tsv"
             capri_ss = pd.read_csv(capri_file, sep="\t")
             metrics = capri_ss[['score', 'total', 'vdw', 'elec', 'desolv', 'bsa']].iloc[0].to_dict()
 
@@ -410,10 +408,10 @@ class AF3HaddockPipeline:
             ligand_properties = self.calculate_ligand_properties(smiles)
             
             # Step 6: Get protein structure for HADDOCK3
-            protein_pdb = str(Path(af3_output) / "ranked_0.pdb")  # Adjust as needed
+            protein_pdb = str(Path(af3_output) / job_name / "*.pdb")  # Adjust as needed
             
             # Step 7: Run HADDOCK3 docking
-            docking_metrics = self.run_haddock3(protein_pdb, ligand_pdb, topology_files)
+            docking_metrics = self.run_haddock3(protein_pdb, str(Path(self.haddock_dir)), topology_files)
             
             # Step 8: Generate CSV output
             csv_path = self.generate_csv_output(
