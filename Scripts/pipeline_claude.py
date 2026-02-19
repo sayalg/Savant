@@ -27,7 +27,7 @@ from rdkit.Chem import Descriptors, Lipinski, Crippen
 from rdkit.Chem import AllChem
 import pandas as pd
 from Bio.PDB import PDBParser, PDBIO, Structure, Model
-from pymol import cmd
+import pymol
 
 
 # Configure logging
@@ -170,7 +170,6 @@ class AF3HaddockPipeline:
         logger.info(f"Converting CIF to PDB: {cif_file}")
         
         try:
-            pymol.finish_launching()
             
             pdb_path = Path(cif_dir) / f"{output_name}_model.pdb"
             
@@ -179,7 +178,6 @@ class AF3HaddockPipeline:
             pymol.cmd.delete("structure")
             
             logger.info(f"CIF converted to PDB: {pdb_path}")
-            # return str(pdb_path)
             
         except Exception as e:
             logger.error(f"CIF to PDB conversion failed: {e}")
@@ -254,11 +252,14 @@ class AF3HaddockPipeline:
         ligand_name = Path(ligand_pdb_path).stem
         acpype_output = self.topology_dir / ligand_name
         
+        # Ensure output directory exists and run acpype inside it
+        acpype_output.mkdir(parents=True, exist_ok=True)
+        acpype_output_str = str(acpype_output.resolve())
+        ligand_pdb_abs = str(Path(ligand_pdb_path).resolve())
+
+        # Use a shell wrapper to cd into the desired output directory before running acpype and then cd back to the original directory
         cmd = [
-            "acpype",
-            "-i", ligand_pdb_path,
-            "-o", "cns",  # CNS format
-            "-d", str(acpype_output)
+            f"cd {acpype_output_str} && acpype -i {ligand_pdb_abs} -o cns && cd -"
         ]
         
         try:
@@ -268,9 +269,8 @@ class AF3HaddockPipeline:
             
             # Find generated files
             topology_files = {
-                "mol": str(acpype_output / f"{ligand_name}_CNS.mol2"),
-                "top": str(acpype_output / f"{ligand_name}_CNS.top"),
-                "pdb": str(acpype_output / f"{ligand_name}_CNS.pdb")
+                "par": str(acpype_output / f"{ligand_name}_CNS.par"),
+                "top": str(acpype_output / f"{ligand_name}_CNS.top")
             }
             
             return topology_files
@@ -330,23 +330,25 @@ class AF3HaddockPipeline:
         """
         logger.info("Running HADDOCK3 docking...")
         
+        topology_dir = Path(topology_files).parent
         output_dir_path = Path(output_dir)
+        cores = os.cpu_count()
         
         cfg_body = f'''
         ## Docked protein complex scoring
         run_dir = "{output_dir_path}"
         mode = "local"
-        ncores = {8}
+        ncores = {cores}
         molecules =  [
             "{protein_pdb}"
             ]
         [topoaa]
         autohis = true
-        ligand_param_fname = "{topology_files["top"]}/{job_name}_ligand.acpype/{job_name}_ligand_CNS.par"
-        ligand_top_fname = "{topology_files["top"]}/{job_name}_ligand.acpype/{job_name}_ligand_CNS.top"
+        ligand_param_fname = "{topology_dir}/{job_name}_ligand.acpype/{topology_files["par"]}"
+        ligand_top_fname = "{topology_dir}/{job_name}_ligand.acpype/{topology_files["top"]}"
         [mdscoring]
-        ligand_param_fname = "{topology_files["top"]}/{job_name}_ligand.acpype/{job_name}_ligand_CNS.par"
-        ligand_top_fname = "{topology_files["top"]}/{job_name}_ligand.acpype/{job_name}_ligand_CNS.top"
+        ligand_param_fname = "{topology_dir}/{job_name}_ligand.acpype/{topology_files["par"]}"
+        ligand_top_fname = "{topology_dir}/{job_name}_ligand.acpype/{topology_files["top"]}"
         nemsteps = 1
         per_interface_scoring = false
         '''
