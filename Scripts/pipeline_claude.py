@@ -11,6 +11,7 @@ Dependencies:
     - subprocess
     - pandas
     - biopython
+    - pymol
 """
 
 import json
@@ -26,6 +27,7 @@ from rdkit.Chem import Descriptors, Lipinski, Crippen
 from rdkit.Chem import AllChem
 import pandas as pd
 from Bio.PDB import PDBParser, PDBIO, Structure, Model
+from pymol import cmd
 
 
 # Configure logging
@@ -78,17 +80,15 @@ class AF3HaddockPipeline:
             "modelSeeds": [1],
             "sequences": [
                 {
-                    "proteinChain": {
+                    "protein": {
                         "id": "A",
-                        "sequence": protein_sequence,
-                        "count": 1
+                        "sequence": protein_sequence
                     }
                 },
                 {
                     "ligand": {
                         "id": "B",
-                        "ligand": smiles,
-                        "count": 1
+                        "smiles": smiles
                     }
                 }
             ],
@@ -103,7 +103,8 @@ class AF3HaddockPipeline:
         logger.info(f"AlphaFold3 JSON created: {json_path}")
         return str(json_path)
     
-    def run_alphafold3(self, json_input_path: str, 
+    def run_alphafold3(self, job_name: str,
+                       json_input_path: str, 
                        singularity_image: str,
                        model_params_dir: str,
                        databases_dir: str,
@@ -124,19 +125,21 @@ class AF3HaddockPipeline:
         
         output_path = self.af3_dir / "predictions"
         output_path.mkdir(exist_ok=True)
+
+        json_input_dir = Path(json_input_path).parent
         
         cmd = [
-            f"singularity exec "
-            "--nv "
-            f"--bind {json_input_path}:/root/af_input "
-            f"--bind {output_path}:/root/af_output "
-            f"--bind {model_params_dir}:/root/models "
-            f"--bind {databases_dir}:/root/public_databases "
-            f"{singularity_image}"
-            f"python {code_dir}/alphafold3/run_alphafold.py "
-            "--json_path=/root/af_input/af3_input.json "
-            "--model_dir=/root/models "
-            "--db_dir=/root/public_databases "
+            "singularity", "exec",
+            "--nv",
+            "--bind", f"{json_input_dir}:/root/af_input",
+            "--bind", f"{output_path}:/root/af_output",
+            "--bind", f"{model_params_dir}:/root/models",
+            "--bind", f"{databases_dir}:/root/public_databases",
+            singularity_image,
+            "python", f"{code_dir}/alphafold3/run_alphafold.py",
+            f"--json_path=/root/af_input/{job_name}_input.json",
+            "--model_dir=/root/models",
+            "--db_dir=/root/public_databases",
             "--output_dir=/root/af_output"
         ]
         
@@ -145,13 +148,44 @@ class AF3HaddockPipeline:
             result = subprocess.run(cmd, check=True, capture_output=True, text=True)
             logger.info("AlphaFold3 completed successfully")
             logger.debug(f"STDOUT: {result.stdout}")
-            return str(output_path)
+            return str(output_path / job_name)
         except subprocess.CalledProcessError as e:
             logger.error(f"AlphaFold3 failed: {e}")
             logger.error(f"STDERR: {e.stderr}")
             raise
     
-    def extract_ligand(self, af3_output_dir: str, ligand_name: str = "ligand") -> str:
+    def convert_cif_to_pdb(self, cif_dir: str, output_name: str = "structure") -> str:
+        """
+        Convert CIF file to PDB format using PyMOL
+        
+        Args:
+            cif_file: Path to input CIF file
+            output_name: Name for output PDB file (without extension)
+            
+        Returns:
+            Path to converted PDB file
+        """
+        cif_file = Path(cif_dir) / f"{output_name}_model.cif"
+        
+        logger.info(f"Converting CIF to PDB: {cif_file}")
+        
+        try:
+            pymol.finish_launching()
+            
+            pdb_path = Path(cif_dir) / f"{output_name}_model.pdb"
+            
+            pymol.cmd.load(cif_file, "structure")
+            pymol.cmd.save(str(pdb_path), "structure")
+            pymol.cmd.delete("structure")
+            
+            logger.info(f"CIF converted to PDB: {pdb_path}")
+            # return str(pdb_path)
+            
+        except Exception as e:
+            logger.error(f"CIF to PDB conversion failed: {e}")
+            raise
+    
+    def extract_ligand(self, af3_output_dir: str, job_name: str) -> str:
         """
         Extract ligand structure from AlphaFold3 output
         
@@ -164,18 +198,18 @@ class AF3HaddockPipeline:
         """
         logger.info("Extracting ligand from AlphaFold3 output...")
         
-        # Find the predicted structure file (typically ranked_0.pdb or similar)
+        # Find the predicted structure file
         af3_dir_path = Path(af3_output_dir)
         structure_file = list(af3_dir_path.glob("*.pdb"))
         
         if not structure_file:
             raise FileNotFoundError(f"No PDB files found in {af3_output_dir}")
-        
+
         # Get AF3 PDB file
         logger.info(f"Using structure: {structure_file}")
         
         # Extract ligand
-        ligand_pdb = self.ligand_dir / f"{ligand_name}.pdb"
+        ligand_pdb = self.ligand_dir / f"{job_name}_ligand.pdb"
         parser = PDBParser(QUIET=True)
         structure = parser.get_structure("protein_structure", str(structure_file))
 
@@ -234,9 +268,9 @@ class AF3HaddockPipeline:
             
             # Find generated files
             topology_files = {
-                "itp": str(acpype_output / f"{ligand_name}_CNS.itp"),
+                "mol": str(acpype_output / f"{ligand_name}_CNS.mol2"),
                 "top": str(acpype_output / f"{ligand_name}_CNS.top"),
-                "gro": str(acpype_output / f"{ligand_name}_CNS.gro")
+                "pdb": str(acpype_output / f"{ligand_name}_CNS.pdb")
             }
             
             return topology_files
@@ -281,7 +315,7 @@ class AF3HaddockPipeline:
         logger.info("Chemistry properties calculated")
         return properties
     
-    def run_haddock3(self, protein_pdb: str, output_dir: str, 
+    def run_haddock3(self, job_name: str, protein_pdb: str, output_dir: str, 
                      topology_files: Dict[str, str]) -> Dict[str, float]:
         """
         Run HADDOCK3 docking (placeholder for custom implementation)
@@ -296,9 +330,11 @@ class AF3HaddockPipeline:
         """
         logger.info("Running HADDOCK3 docking...")
         
+        output_dir_path = Path(output_dir)
+        
         cfg_body = f'''
         ## Docked protein complex scoring
-        run_dir = "{output_dir}"
+        run_dir = "{output_dir_path}"
         mode = "local"
         ncores = {8}
         molecules =  [
@@ -306,35 +342,35 @@ class AF3HaddockPipeline:
             ]
         [topoaa]
         autohis = true
-        ligand_param_fname = "{topology_files}/ligand.acpype/ligand_CNS.par"
-        ligand_top_fname = "{topology_files}/ligand.acpype/ligand_CNS.top"
+        ligand_param_fname = "{topology_files["top"]}/{job_name}_ligand.acpype/{job_name}_ligand_CNS.par"
+        ligand_top_fname = "{topology_files["top"]}/{job_name}_ligand.acpype/{job_name}_ligand_CNS.top"
         [mdscoring]
-        ligand_param_fname = "{topology_files}/ligand.acpype/ligand_CNS.par"
-        ligand_top_fname = "{topology_files}/ligand.acpype/ligand_CNS.top"
+        ligand_param_fname = "{topology_files["top"]}/{job_name}_ligand.acpype/{job_name}_ligand_CNS.par"
+        ligand_top_fname = "{topology_files["top"]}/{job_name}_ligand.acpype/{job_name}_ligand_CNS.top"
         nemsteps = 1
         per_interface_scoring = false
         '''
 
-        cfg_file = topology_files / "score.cfg"
+        cfg_file = output_dir_path / "score.cfg"
         cfg_file.write_text(cfg_body.strip())
 
         ## Run HADDOCK3 scoring
-        print("Running HADDOCK3 scoring...")
+        logger.info("Running HADDOCK3 scoring...")
         try:
             subprocess.run(
                 ["haddock3", str(cfg_file)],
                 capture_output=True, text=True, check=True
             )
 
-            capri_file = output_dir / "run0/analysis/1_mdscoring_analysis/capri_ss.tsv"
+            capri_file = output_dir_path / "run0/analysis/1_mdscoring_analysis/capri_ss.tsv"
             capri_ss = pd.read_csv(capri_file, sep="\t")
             metrics = capri_ss[['score', 'total', 'vdw', 'elec', 'desolv', 'bsa']].iloc[0].to_dict()
 
         except subprocess.CalledProcessError as e:
-            print("HADDOCK3 Error:", e.stderr)
+            logger.error(f"HADDOCK3 Error: {e.stderr}")
             return {}
         except Exception as e:
-            print("Unexpected error:", e)
+            logger.error(f"Unexpected error: {e}")
             return {}
         
         logger.info("HADDOCK3 completed")
@@ -395,25 +431,28 @@ class AF3HaddockPipeline:
             
             # Step 2: Run AlphaFold3
             af3_output = self.run_alphafold3(
-                json_path, singularity_image, model_params_dir, databases_dir, code_dir
+                job_name, json_path, singularity_image, model_params_dir, databases_dir, code_dir
             )
+
+            # Step 3: Convert AF3 CIF to PDB
+            self.convert_cif_to_pdb(af3_output, job_name)
             
-            # Step 3: Extract ligand
-            ligand_pdb = self.extract_ligand(af3_output, f"{job_name}_ligand")
+            # Step 4: Extract ligand
+            ligand_pdb = self.extract_ligand(af3_output, job_name)
             
-            # Step 4: Run ACPYPE for topology
+            # Step 5: Run ACPYPE for topology
             topology_files = self.run_acpype(ligand_pdb)
             
-            # Step 5: Calculate ligand properties with RDKit
+            # Step 6: Calculate ligand properties with RDKit
             ligand_properties = self.calculate_ligand_properties(smiles)
             
-            # Step 6: Get protein structure for HADDOCK3
+            # Step 7: Get protein structure for HADDOCK3
             protein_pdb = str(Path(af3_output) / job_name / "*.pdb")  # Adjust as needed
             
-            # Step 7: Run HADDOCK3 docking
-            docking_metrics = self.run_haddock3(protein_pdb, str(Path(self.haddock_dir)), topology_files)
+            # Step 8: Run HADDOCK3 docking
+            docking_metrics = self.run_haddock3(job_name, protein_pdb, str(Path(self.haddock_dir)), topology_files)
             
-            # Step 8: Generate CSV output
+            # Step 9: Generate CSV output
             csv_path = self.generate_csv_output(
                 ligand_properties, docking_metrics, f"{job_name}_results.csv"
             )
