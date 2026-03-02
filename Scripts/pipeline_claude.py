@@ -18,6 +18,7 @@ import json
 import os
 import subprocess
 import sys
+import glob
 from pathlib import Path
 from typing import Dict, List, Tuple, Optional
 import argparse
@@ -178,6 +179,7 @@ class AF3HaddockPipeline:
             pymol.cmd.delete("structure")
             
             logger.info(f"CIF converted to PDB: {pdb_path}")
+            return str(pdb_path)
             
         except Exception as e:
             logger.error(f"CIF to PDB conversion failed: {e}")
@@ -197,10 +199,9 @@ class AF3HaddockPipeline:
         logger.info("Extracting ligand from AlphaFold3 output...")
         
         # Find the predicted structure file
-        af3_dir_path = Path(af3_output_dir)
-        structure_file = list(af3_dir_path.glob("*.pdb"))
+        structure_file = Path(af3_output_dir) / f"{job_name}_model.pdb"
         
-        if not structure_file:
+        if not structure_file.exists():
             raise FileNotFoundError(f"No PDB files found in {af3_output_dir}")
 
         # Get AF3 PDB file
@@ -237,43 +238,40 @@ class AF3HaddockPipeline:
         logger.info(f"Ligand extracted to: {ligand_pdb}")
         return str(ligand_pdb)
     
-    def run_acpype(self, ligand_pdb_path: str) -> Dict[str, str]:
-        """
-        Run ACPYPE to generate topology files
-        
-        Args:
-            ligand_pdb_path: Path to ligand PDB file
-            
-        Returns:
-            Dictionary with paths to topology files
-        """
-        logger.info("Running ACPYPE for topology generation...")
-        
+    def run_acpype(self, ligand_pdb_path: str, smiles: str) -> Dict[str, str]:
         ligand_name = Path(ligand_pdb_path).stem
+
+        # Compute net charge from SMILES — reliable, unlike PDB
+        mol_smiles = Chem.MolFromSmiles(smiles)
+        if mol_smiles is None:
+            raise ValueError(f"Could not parse SMILES for charge calculation: {smiles}")
+        net_charge = Chem.GetFormalCharge(mol_smiles)
+        logger.info(f"Net formal charge from SMILES: {net_charge}")
+
         acpype_output = self.topology_dir / ligand_name
-        
-        # Ensure output directory exists and run acpype inside it
         acpype_output.mkdir(parents=True, exist_ok=True)
         acpype_output_str = str(acpype_output.resolve())
         ligand_pdb_abs = str(Path(ligand_pdb_path).resolve())
+        acpype_image_path = "/users/sguirale/sw/acpype/acpype.sif"
 
-        # Use a shell wrapper to cd into the desired output directory before running acpype and then cd back to the original directory
         cmd = [
-            f"cd {acpype_output_str} && acpype -i {ligand_pdb_abs} -o cns && cd -"
+            "singularity", "exec", str(acpype_image_path),
+            "acpype", "-i", ligand_pdb_abs, "-o", "cns", "-n", str(net_charge)
         ]
-        
+
         try:
             logger.info(f"Executing: {' '.join(cmd)}")
-            subprocess.run(cmd, check=True, capture_output=True, text=True)
+            subprocess.run(cmd, check=True, capture_output=True, text=True, cwd=acpype_output_str)
             logger.info("ACPYPE completed successfully")
-            
-            # Find generated files
+
+            acpype_subdir = acpype_output / f"{ligand_name}.acpype"
             topology_files = {
-                "par": str(acpype_output / f"{ligand_name}_CNS.par"),
-                "top": str(acpype_output / f"{ligand_name}_CNS.top")
+                "par": str(acpype_subdir / f"{ligand_name}_CNS.par"),
+                "top": str(acpype_subdir / f"{ligand_name}_CNS.top"),
+                "acpype_dir": str(acpype_subdir)
             }
-            
             return topology_files
+
         except subprocess.CalledProcessError as e:
             logger.error(f"ACPYPE failed: {e}")
             logger.error(f"STDERR: {e.stderr}")
@@ -330,8 +328,7 @@ class AF3HaddockPipeline:
         """
         logger.info("Running HADDOCK3 docking...")
         
-        topology_dir = Path(topology_files).parent
-        output_dir_path = Path(output_dir)
+        output_dir_path = Path(output_dir) / "output"
         cores = os.cpu_count()
         
         cfg_body = f'''
@@ -344,16 +341,16 @@ class AF3HaddockPipeline:
             ]
         [topoaa]
         autohis = true
-        ligand_param_fname = "{topology_dir}/{job_name}_ligand.acpype/{topology_files["par"]}"
-        ligand_top_fname = "{topology_dir}/{job_name}_ligand.acpype/{topology_files["top"]}"
+        ligand_param_fname = "{topology_files["par"]}"
+        ligand_top_fname = "{topology_files["top"]}"
         [mdscoring]
-        ligand_param_fname = "{topology_dir}/{job_name}_ligand.acpype/{topology_files["par"]}"
-        ligand_top_fname = "{topology_dir}/{job_name}_ligand.acpype/{topology_files["top"]}"
+        ligand_param_fname = "{topology_files["par"]}"
+        ligand_top_fname = "{topology_files["top"]}"
         nemsteps = 1
         per_interface_scoring = false
         '''
 
-        cfg_file = output_dir_path / "score.cfg"
+        cfg_file = Path(output_dir) / "score.cfg"
         cfg_file.write_text(cfg_body.strip())
 
         ## Run HADDOCK3 scoring
@@ -364,7 +361,7 @@ class AF3HaddockPipeline:
                 capture_output=True, text=True, check=True
             )
 
-            capri_file = output_dir_path / "run0/analysis/1_mdscoring_analysis/capri_ss.tsv"
+            capri_file = output_dir_path / "analysis/1_mdscoring_analysis/capri_ss.tsv"
             capri_ss = pd.read_csv(capri_file, sep="\t")
             metrics = capri_ss[['score', 'total', 'vdw', 'elec', 'desolv', 'bsa']].iloc[0].to_dict()
 
@@ -409,7 +406,8 @@ class AF3HaddockPipeline:
     
     def run_pipeline(self, protein_sequence: str, smiles: str,
                     singularity_image: str, model_params_dir: str,
-                    databases_dir: str, code_dir: str, job_name: str = "docking_job") -> str:
+                    databases_dir: str, code_dir: str, job_name: str = "docking_job",
+                    start_from: str = "alphafold3") -> str:
         """
         Run the complete pipeline
         
@@ -421,47 +419,73 @@ class AF3HaddockPipeline:
             databases_dir: Path to sequence databases
             code_dir: Path to directory containing AF3 code
             job_name: Name for the job
+            start_from: Step to start from (default: "alphafold3")
             
         Returns:
             Path to results CSV file
         """
-        logger.info(f"Starting pipeline for job: {job_name}")
-        
-        try:
-            # Step 1: Create AlphaFold3 JSON input
-            json_path = self.create_af3_json(protein_sequence, smiles, job_name)
-            
-            # Step 2: Run AlphaFold3
-            af3_output = self.run_alphafold3(
-                job_name, json_path, singularity_image, model_params_dir, databases_dir, code_dir
-            )
+        steps = ["alphafold3", "convert", "extract", "acpype", "haddock3"]
+        skip = steps[:steps.index(start_from)]  # steps before start_from are skipped
+        logger.info(f"Starting pipeline from step: '{start_from}'")
 
-            # Step 3: Convert AF3 CIF to PDB
-            self.convert_cif_to_pdb(af3_output, job_name)
-            
-            # Step 4: Extract ligand
-            ligand_pdb = self.extract_ligand(af3_output, job_name)
-            
-            # Step 5: Run ACPYPE for topology
-            topology_files = self.run_acpype(ligand_pdb)
-            
-            # Step 6: Calculate ligand properties with RDKit
+        try:
+            af3_output = str(self.af3_dir / "predictions" / job_name)
+
+            # Step 1: AlphaFold3
+            if "alphafold3" not in skip:
+                json_path = self.create_af3_json(protein_sequence, smiles, job_name)
+                af3_output = self.run_alphafold3(
+                    job_name, json_path, singularity_image,
+                    model_params_dir, databases_dir, code_dir
+                )
+            else:
+                logger.info("Skipping AlphaFold3 — using existing outputs")
+
+            # Step 2: CIF to PDB
+            if "convert" not in skip:
+                self.convert_cif_to_pdb(af3_output, job_name)
+            else:
+                logger.info("Skipping CIF conversion — using existing PDB")
+
+            # Step 3: Extract ligand
+            ligand_pdb = str(self.ligand_dir / f"{job_name}_ligand.pdb")
+            if "extract" not in skip:
+                ligand_pdb = self.extract_ligand(af3_output, job_name)
+            else:
+                logger.info(f"Skipping ligand extraction — using: {ligand_pdb}")
+
+            # Step 4: ACPYPE topology
+            if "acpype" not in skip:
+                topology_files = self.run_acpype(ligand_pdb, smiles)
+            else:
+                # Reconstruct topology_files dict from expected paths
+                ligand_name = Path(ligand_pdb).stem
+                acpype_subdir = self.topology_dir / ligand_name / f"{ligand_name}.acpype"
+                topology_files = {
+                    "par": str(acpype_subdir / f"{ligand_name}_CNS.par"),
+                    "top": str(acpype_subdir / f"{ligand_name}_CNS.top"),
+                    "acpype_dir": str(acpype_subdir)
+                }
+                logger.info(f"Skipping ACPYPE — using existing topology: {acpype_subdir}")
+
+            # Step 5: HADDOCK3
+            protein_pdb = str(self.af3_dir / "predictions" / job_name / f"{job_name}_model.pdb")
             ligand_properties = self.calculate_ligand_properties(smiles)
-            
-            # Step 7: Get protein structure for HADDOCK3
-            protein_pdb = str(Path(af3_output) / job_name / "*.pdb")  # Adjust as needed
-            
-            # Step 8: Run HADDOCK3 docking
-            docking_metrics = self.run_haddock3(job_name, protein_pdb, str(Path(self.haddock_dir)), topology_files)
-            
-            # Step 9: Generate CSV output
+            if "haddock3" not in skip:
+                docking_metrics = self.run_haddock3(
+                    job_name, protein_pdb,
+                    str(self.haddock_dir), topology_files
+                )
+            else:
+                logger.info("Skipping HADDOCK3")
+                docking_metrics = {}
+
             csv_path = self.generate_csv_output(
                 ligand_properties, docking_metrics, f"{job_name}_results.csv"
             )
-            
-            logger.info(f"Pipeline completed successfully! Results: {csv_path}")
+            logger.info(f"Pipeline completed! Results: {csv_path}")
             return csv_path
-            
+
         except Exception as e:
             logger.error(f"Pipeline failed: {e}")
             raise
@@ -512,6 +536,12 @@ def main():
         default="docking_job",
         help="Job name (default: docking_job)"
     )
+    parser.add_argument(
+        "--start-from",
+        choices=["alphafold3", "convert", "extract", "acpype", "haddock3"],
+        default="alphafold3",
+        help="Resume pipeline from a specific step (default: alphafold3)"
+    )
     
     args = parser.parse_args()
     
@@ -533,7 +563,8 @@ def main():
         model_params_dir=args.model_params,
         databases_dir=args.databases,
         code_dir=args.code_dir,
-        job_name=args.job_name
+        job_name=args.job_name,
+        start_from=args.start_from
     )
     
     print(f"\n{'='*60}")
