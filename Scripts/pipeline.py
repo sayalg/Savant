@@ -1,17 +1,6 @@
 #!/usr/bin/env python3
 """
 AlphaFold3 to HADDOCK3 Protein-Ligand Docking Pipeline
-
-This script processes protein sequences and ligands through AlphaFold3 structure prediction,
-ligand extraction, topology generation, and HADDOCK3 docking.
-
-Dependencies:
-    - rdkit
-    - json
-    - subprocess
-    - pandas
-    - biopython
-    - pymol
 """
 
 import json
@@ -30,109 +19,122 @@ import pandas as pd
 from Bio.PDB import PDBParser, PDBIO, Structure, Model
 import pymol
 
+# Import MMseqs2 function directly to avoid subprocess overhead
+from run_mmseqs2 import run_mmseqs2
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s'
-)
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 
 class AF3HaddockPipeline:
-    """Pipeline for protein-ligand docking using AlphaFold3 and HADDOCK3"""
-    
+
     def __init__(self, output_dir: str = "./pipeline_output"):
-        """
-        Initialize the pipeline
-        
-        Args:
-            output_dir: Directory for all output files
-        """
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
-        
-        # Define subdirectories
+
         self.af3_dir = self.output_dir / "alphafold3"
+        self.msa_dir = self.output_dir / "msa"
         self.ligand_dir = self.output_dir / "ligands"
         self.topology_dir = self.output_dir / "topologies"
         self.haddock_dir = self.output_dir / "haddock3"
         self.csv_dir = self.output_dir / "csv"
-        
-        for dir_path in [self.af3_dir, self.ligand_dir, self.topology_dir, self.haddock_dir, self.csv_dir]:
-            dir_path.mkdir(exist_ok=True)
-    
-    def create_af3_json(self, protein_sequence: str, smiles: str, 
-                        job_name: str = "protein_ligand") -> str:
+
+        for d in [self.af3_dir, self.msa_dir, self.ligand_dir,
+                  self.topology_dir, self.haddock_dir, self.csv_dir]:
+            d.mkdir(exist_ok=True)
+
+    def run_mmseqs2_msa(self, protein_sequence: str, job_name: str,
+                        max_seqs: int = 512) -> str:
         """
-        Create AlphaFold3 JSON input file
-        
-        Args:
-            protein_sequence: Amino acid sequence
-            smiles: SMILES string for ligand
-            job_name: Name for the job
-            
-        Returns:
-            Path to created JSON file
+        Call the ColabFold MMseqs2 API, cap MSA depth, and save as .a3m.
+
+        Returns the path to the saved a3m file.
+        """
+        logger.info(f"Running MMseqs2 MSA generation (max_seqs={max_seqs})...")
+
+        prefix = str(self.msa_dir / job_name)
+        a3m_path = Path(f"{prefix}_alignment.a3m")
+
+        if a3m_path.exists():
+            logger.info(f"Cached MSA found, skipping API call: {a3m_path}")
+            return str(a3m_path)
+
+        result = run_mmseqs2(protein_sequence, prefix)
+        a3m_lines: List[str] = result[0] if isinstance(result, tuple) else result
+        a3m_content = "".join(a3m_lines)
+
+        # Cap MSA depth
+        sequences, current_block = [], []
+        for line in a3m_content.splitlines(keepends=True):
+            if line.startswith(">") and current_block:
+                sequences.append("".join(current_block))
+                current_block = []
+            current_block.append(line)
+        if current_block:
+            sequences.append("".join(current_block))
+
+        if len(sequences) > max_seqs:
+            logger.info(f"Truncating MSA from {len(sequences)} → {max_seqs} sequences")
+            sequences = sequences[:max_seqs]
+
+        with open(a3m_path, "w") as f:
+            f.write("".join(sequences))
+
+        logger.info(f"MSA saved: {a3m_path} ({len(sequences)} sequences)")
+        return str(a3m_path)
+
+    def create_af3_json(self, protein_sequence: str, smiles: str,
+                        job_name: str = "protein_ligand",
+                        msa_path: Optional[str] = None) -> str:
+        """
+        Create AF3 JSON input. When msa_path is provided the a3m content is
+        embedded in unpairedMsa so AF3 skips its own MSA search.
         """
         logger.info("Creating AlphaFold3 JSON input...")
-        
+
+        protein_entry: Dict = {"id": "A", "sequence": protein_sequence}
+
+        if msa_path:
+            logger.info(f"Embedding pre-computed MSA from: {msa_path}")
+            with open(msa_path) as f:
+                protein_entry["unpairedMsa"] = f.read()
+            protein_entry["pairedMsa"] = ""
+            protein_entry["templates"] = []
+
         af3_input = {
             "name": job_name,
             "modelSeeds": [1],
             "sequences": [
-                {
-                    "protein": {
-                        "id": "A",
-                        "sequence": protein_sequence
-                    }
-                },
-                {
-                    "ligand": {
-                        "id": "B",
-                        "smiles": smiles
-                    }
-                }
+                {"protein": protein_entry},
+                {"ligand": {"id": "B", "smiles": smiles}}
             ],
             "dialect": "alphafold3",
             "version": 1
         }
-        
+
         json_path = self.af3_dir / f"{job_name}_input.json"
         with open(json_path, 'w') as f:
             json.dump(af3_input, f, indent=2)
-        
+
         logger.info(f"AlphaFold3 JSON created: {json_path}")
         return str(json_path)
-    
-    def run_alphafold3(self, job_name: str,
-                       json_input_path: str, 
-                       singularity_image: str,
-                       model_params_dir: str,
-                       databases_dir: str,
-                       code_dir: str) -> str:
+
+    def run_alphafold3(self, job_name: str, json_input_path: str,
+                       singularity_image: str, model_params_dir: str,
+                       databases_dir: str, code_dir: str,
+                       skip_data_pipeline: bool = False) -> str:
         """
-        Run AlphaFold3 using singularity container
-        
-        Args:
-            json_input_path: Path to AF3 JSON input
-            singularity_image: Path to AF3 singularity image (.sif file)
-            model_params_dir: Path to AlphaFold3 model parameters
-            databases_dir: Path to sequence databases
-            
-        Returns:
-            Path to output directory
+        Run AF3 via Singularity. Passes --norun_data_pipeline when
+        skip_data_pipeline=True (i.e. MSA is already embedded in the JSON).
         """
         logger.info("Running AlphaFold3...")
-        
+
         output_path = self.af3_dir / "predictions"
         output_path.mkdir(exist_ok=True)
-
         json_input_dir = Path(json_input_path).parent
-        
+
         cmd = [
-            "singularity", "exec",
-            "--nv",
+            "singularity", "exec", "--nv",
             "--bind", f"{json_input_dir}:/root/af_input",
             "--bind", f"{output_path}:/root/af_output",
             "--bind", f"{model_params_dir}:/root/models",
@@ -144,7 +146,11 @@ class AF3HaddockPipeline:
             "--db_dir=/root/public_databases",
             "--output_dir=/root/af_output"
         ]
-        
+
+        if skip_data_pipeline:
+            cmd.append("--norun_data_pipeline")
+            logger.info("Data pipeline disabled — using embedded MSA")
+
         try:
             logger.info(f"Executing: {' '.join(cmd)}")
             result = subprocess.run(cmd, check=True, capture_output=True, text=True)
@@ -152,104 +158,40 @@ class AF3HaddockPipeline:
             logger.debug(f"STDOUT: {result.stdout}")
             return str(output_path / job_name)
         except subprocess.CalledProcessError as e:
-            logger.error(f"AlphaFold3 failed: {e}")
-            logger.error(f"STDERR: {e.stderr}")
+            logger.error(f"AlphaFold3 failed: {e.stderr}")
             raise
-    
-    def patch_cif_residue_name(self, cif_dir: str, job_name: str,
-                                old_name: str = "LIG_B", new_name: str = "LIG") -> None:
-        """
-        Rename ligand residue in AF3 CIF file before PDB conversion.
-        AF3 appends the chain ID to the ligand name (e.g. LIG_B), which causes
-        mismatches downstream in ACPYPE and HADDOCK3.
 
-        Args:
-            cif_dir: Directory containing the CIF file
-            job_name: Job name used to locate the CIF file
-            old_name: Residue name to replace (default: LIG_B)
-            new_name: Replacement residue name (default: LIG)
-        """
+    def patch_cif_residue_name(self, cif_dir, job_name,
+                                old_name="LIG_B", new_name="LIG"):
         cif_file = Path(cif_dir) / f"{job_name}_model.cif"
-
         if not cif_file.exists():
             raise FileNotFoundError(f"CIF file not found: {cif_file}")
-
-        logger.info(f"Patching CIF residue name: '{old_name}' -> '{new_name}' in {cif_file}")
-
-        with open(cif_file, 'r') as f:
+        with open(cif_file) as f:
             content = f.read()
-
         if old_name not in content:
-            logger.warning(f"'{old_name}' not found in CIF file — skipping patch")
+            logger.warning(f"'{old_name}' not found in CIF — skipping patch")
             return
+        with open(cif_file, 'w') as f:
+            f.write(content.replace(old_name, new_name))
+        logger.info(f"Patched CIF: {cif_file}")
 
-        # Replace all occurrences — covers _chem_comp.id, _atom_site.label_comp_id, etc.
-        patched = content.replace(old_name, new_name)
-
-        # Write to a new file to preserve the original
-        patched_cif = Path(cif_dir) / f"{job_name}_model.cif"
-        with open(patched_cif, 'w') as f:
-            f.write(patched)
-
-        logger.info(f"Patched CIF written to: {patched_cif}")    
-    
-    def convert_cif_to_pdb(self, cif_dir: str, output_name: str = "structure") -> str:
-        """
-        Convert CIF file to PDB format using PyMOL
-        
-        Args:
-            cif_file: Path to input CIF file
-            output_name: Name for output PDB file (without extension)
-            
-        Returns:
-            Path to converted PDB file
-        """
+    def convert_cif_to_pdb(self, cif_dir, output_name="structure"):
         cif_file = Path(cif_dir) / f"{output_name}_model.cif"
-        
-        logger.info(f"Converting CIF to PDB: {cif_file}")
-        
-        try:
-            
-            pdb_path = Path(cif_dir) / f"{output_name}_model.pdb"
-            
-            pymol.cmd.load(cif_file, "structure")
-            pymol.cmd.save(str(pdb_path), "structure")
-            pymol.cmd.delete("structure")
-            
-            logger.info(f"CIF converted to PDB: {pdb_path}")
-            return str(pdb_path)
-            
-        except Exception as e:
-            logger.error(f"CIF to PDB conversion failed: {e}")
-            raise
-    
-    def extract_ligand(self, af3_output_dir: str, job_name: str) -> str:
-        """
-        Extract ligand structure from AlphaFold3 output
-        
-        Args:
-            af3_output_dir: Directory containing AF3 predictions
-            ligand_name: Name for extracted ligand file
-            
-        Returns:
-            Path to extracted ligand PDB file
-        """
-        logger.info("Extracting ligand from AlphaFold3 output...")
-        
-        # Find the predicted structure file
-        structure_file = Path(af3_output_dir) / f"{job_name}_model.pdb"
-        
-        if not structure_file.exists():
-            raise FileNotFoundError(f"No PDB files found in {af3_output_dir}")
+        pdb_path = Path(cif_dir) / f"{output_name}_model.pdb"
+        pymol.cmd.load(cif_file, "structure")
+        pymol.cmd.save(str(pdb_path), "structure")
+        pymol.cmd.delete("structure")
+        logger.info(f"CIF converted to PDB: {pdb_path}")
+        return str(pdb_path)
 
-        # Get AF3 PDB file
-        logger.info(f"Using structure: {structure_file}")
-        
-        # Extract ligand
+    def extract_ligand(self, af3_output_dir, job_name):
+        logger.info("Extracting ligand from AlphaFold3 output...")
+        structure_file = Path(af3_output_dir) / f"{job_name}_model.pdb"
+        if not structure_file.exists():
+            raise FileNotFoundError(f"PDB not found: {structure_file}")
         ligand_pdb = self.ligand_dir / f"{job_name}_ligand.pdb"
         parser = PDBParser(QUIET=True)
-        structure = parser.get_structure("protein_structure", str(structure_file))
-
+        structure = parser.get_structure("s", str(structure_file))
         extracted_chain = None
         for model in structure:
             for chain in model:
@@ -258,125 +200,70 @@ class AF3HaddockPipeline:
                     break
             if extracted_chain:
                 break
-
         if not extracted_chain:
-            print(f"Chain 'B' not found in '{structure_file.name}'")
-            return {}
-        
-        # Wrap chain into new structure
-        new_structure = Structure.Structure("ligand_only")
-        new_model = Model.Model(0)
-        new_model.add(extracted_chain.copy())
-        new_structure.add(new_model)
-
+            raise ValueError(f"Chain B not found in {structure_file}")
+        new_s = Structure.Structure("ligand_only")
+        new_m = Model.Model(0)
+        new_m.add(extracted_chain.copy())
+        new_s.add(new_m)
         io = PDBIO()
-        io.set_structure(new_structure)
+        io.set_structure(new_s)
         io.save(str(ligand_pdb))
-        
-        logger.info(f"Ligand extracted to: {ligand_pdb}")
+        logger.info(f"Ligand extracted: {ligand_pdb}")
         return str(ligand_pdb)
-    
-    def run_acpype(self, ligand_pdb_path: str, smiles: str) -> Dict[str, str]:
-        ligand_name = Path(ligand_pdb_path).stem
 
-        # Compute net charge from SMILES — reliable, unlike PDB
+    def run_acpype(self, ligand_pdb_path, smiles):
+        ligand_name = Path(ligand_pdb_path).stem
         mol_smiles = Chem.MolFromSmiles(smiles)
         if mol_smiles is None:
-            raise ValueError(f"Could not parse SMILES for charge calculation: {smiles}")
+            raise ValueError(f"Could not parse SMILES: {smiles}")
         net_charge = Chem.GetFormalCharge(mol_smiles)
-        logger.info(f"Net formal charge from SMILES: {net_charge}")
-
         acpype_output = self.topology_dir / ligand_name
         acpype_output.mkdir(parents=True, exist_ok=True)
-        acpype_output_str = str(acpype_output.resolve())
-        ligand_pdb_abs = str(Path(ligand_pdb_path).resolve())
-        acpype_image_path = "/users/sguirale/sw/acpype/acpype.sif"
-
         cmd = [
-            "singularity", "exec", str(acpype_image_path),
-            "acpype", "-i", ligand_pdb_abs, "-o", "cns", "-n", str(net_charge)
+            "singularity", "exec", "/users/sguirale/sw/acpype/acpype.sif",
+            "acpype", "-i", str(Path(ligand_pdb_path).resolve()),
+            "-o", "cns", "-n", str(net_charge)
         ]
+        subprocess.run(cmd, check=True, capture_output=True, text=True,
+                       cwd=str(acpype_output.resolve()))
+        acpype_subdir = acpype_output / f"{ligand_name}.acpype"
+        return {
+            "par": str(acpype_subdir / f"{ligand_name}_CNS.par"),
+            "top": str(acpype_subdir / f"{ligand_name}_CNS.top"),
+            "acpype_dir": str(acpype_subdir)
+        }
 
-        try:
-            logger.info(f"Executing: {' '.join(cmd)}")
-            subprocess.run(cmd, check=True, capture_output=True, text=True, cwd=acpype_output_str)
-            logger.info("ACPYPE completed successfully")
-
-            acpype_subdir = acpype_output / f"{ligand_name}.acpype"
-            topology_files = {
-                "par": str(acpype_subdir / f"{ligand_name}_CNS.par"),
-                "top": str(acpype_subdir / f"{ligand_name}_CNS.top"),
-                "acpype_dir": str(acpype_subdir)
-            }
-            return topology_files
-
-        except subprocess.CalledProcessError as e:
-            logger.error(f"ACPYPE failed: {e}")
-            logger.error(f"STDERR: {e.stderr}")
-            raise
-    
-    def calculate_ligand_properties(self, smiles: str) -> Dict[str, float]:
-        """
-        Calculate chemical properties of ligand using RDKit
-        
-        Args:
-            smiles: SMILES string
-            
-        Returns:
-            Dictionary of chemical properties
-        """
-        logger.info("Calculating ligand chemistry properties...")
-        
+    def calculate_ligand_properties(self, smiles):
         mol = Chem.MolFromSmiles(smiles)
         if mol is None:
-            raise ValueError(f"Invalid SMILES string: {smiles}")
-        
-        # Add hydrogens for accurate calculations
+            raise ValueError(f"Invalid SMILES: {smiles}")
         mol = Chem.AddHs(mol)
-        
-        properties = {
+        return {
             "molecular_weight": Descriptors.MolWt(mol),
             "logP": Crippen.MolLogP(mol),
             "num_h_donors": Lipinski.NumHDonors(mol),
             "num_h_acceptors": Lipinski.NumHAcceptors(mol),
             "num_rotatable_bonds": Lipinski.NumRotatableBonds(mol),
-            "tpsa": Descriptors.TPSA(mol),  # Topological polar surface area
+            "tpsa": Descriptors.TPSA(mol),
             "num_rings": Lipinski.RingCount(mol),
             "num_aromatic_rings": Lipinski.NumAromaticRings(mol),
             "num_atoms": mol.GetNumAtoms(),
             "num_heavy_atoms": Lipinski.HeavyAtomCount(mol),
             "formal_charge": Chem.GetFormalCharge(mol),
         }
-        
-        logger.info("Chemistry properties calculated")
-        return properties
-    
-    def run_haddock3(self, job_name: str, protein_pdb: str, output_dir: str, 
-                     topology_files: Dict[str, str]) -> Dict[str, float]:
-        """
-        Run HADDOCK3 docking (placeholder for custom implementation)
-        
-        Args:
-            protein_pdb: Path to protein structure
-            ligand_pdb: Path to ligand structure
-            topology_files: Dictionary of topology file paths
-            
-        Returns:
-            Dictionary of docking metrics
-        """
+
+    def run_haddock3(self, job_name, protein_pdb, output_dir, topology_files):
         logger.info("Running HADDOCK3 docking...")
+        # Create Job directory
+        (Path(output_dir) / job_name).mkdir(parents=True, exist_ok=True)
         
         output_dir_path = Path(output_dir) / job_name / "output"
-        cores = os.cpu_count()
-        
         cfg_body = f'''
-        ## Docked protein complex scoring
         run_dir = "{output_dir_path}"
         mode = "local"
-        ncores = {cores}
-        molecules =  [
-            "{protein_pdb}"
-            ]
+        ncores = {os.cpu_count()}
+        molecules = ["{protein_pdb}"]
         [topoaa]
         autohis = true
         ligand_param_fname = "{topology_files["par"]}"
@@ -387,118 +274,86 @@ class AF3HaddockPipeline:
         nemsteps = 1
         per_interface_scoring = false
         '''
-
         cfg_file = Path(output_dir) / job_name / "score.cfg"
         cfg_file.write_text(cfg_body.strip())
-
-        ## Run HADDOCK3 scoring
-        logger.info("Running HADDOCK3 scoring...")
         try:
-            subprocess.run(
-                ["haddock3", str(cfg_file)],
-                capture_output=True, text=True, check=True
+            subprocess.run(["haddock3", str(cfg_file)],
+                           capture_output=True, text=True, check=True)
+            capri_ss = pd.read_csv(
+                output_dir_path / "analysis/1_mdscoring_analysis/capri_ss.tsv",
+                sep="\t"
             )
-
-            capri_file = output_dir_path / "analysis/1_mdscoring_analysis/capri_ss.tsv"
-            capri_ss = pd.read_csv(capri_file, sep="\t")
-            metrics = capri_ss[['score', 'total', 'vdw', 'elec', 'desolv', 'bsa']].iloc[0].to_dict()
-
-        except subprocess.CalledProcessError as e:
-            logger.error(f"HADDOCK3 Error: {e.stderr}")
-            return {}
+            return capri_ss[['score','total','vdw','elec','desolv','bsa']].iloc[0].to_dict()
         except Exception as e:
-            logger.error(f"Unexpected error: {e}")
+            logger.error(f"HADDOCK3 error: {e}")
             return {}
-        
-        logger.info("HADDOCK3 completed")
-        return metrics
-    
-    def generate_csv_output(self, ligand_properties: Dict[str, float],
-                           docking_metrics: Dict[str, float],
-                           job_name: str) -> str:
-        """
-        Generate CSV file with ligand chemistry and docking metrics
-        
-        Args:
-            ligand_properties: Dictionary of ligand chemical properties
-            docking_metrics: Dictionary of docking metrics
-            output_filename: Name for output CSV file
-            
-        Returns:
-            Path to CSV file
-        """
-        logger.info("Generating CSV output...")
-        
-        # Combine all results
+
+    def generate_csv_output(self, ligand_properties, docking_metrics, job_name):
         all_data = {**ligand_properties, **docking_metrics}
-        
-        # Create DataFrame
         df = pd.DataFrame([all_data])
         df.insert(0, 'Job_ID', job_name)
-        
-        # Save to CSV
         csv_path = self.csv_dir / f"{job_name}_results.csv"
         df.to_csv(csv_path, index=False)
-        
-        logger.info(f"Results saved to: {csv_path}")
+        logger.info(f"Results saved: {csv_path}")
         return str(csv_path)
-    
+
     def run_pipeline(self, protein_sequence: str, smiles: str,
-                    singularity_image: str, model_params_dir: str,
-                    databases_dir: str, code_dir: str, job_name: str = "docking_job",
-                    start_from: str = "alphafold3") -> str:
-        """
-        Run the complete pipeline
-        
-        Args:
-            protein_sequence: Amino acid sequence
-            smiles: SMILES string for ligand
-            singularity_image: Path to AlphaFold3 singularity image
-            model_params_dir: Path to AF3 model parameters
-            databases_dir: Path to sequence databases
-            code_dir: Path to directory containing AF3 code
-            job_name: Name for the job
-            start_from: Step to start from (default: "alphafold3")
-            
-        Returns:
-            Path to results CSV file
-        """
-        steps = ["alphafold3", "convert", "extract", "acpype", "haddock3"]
-        skip = steps[:steps.index(start_from)]  # steps before start_from are skipped
+                     singularity_image: str, model_params_dir: str,
+                     databases_dir: str, code_dir: str,
+                     job_name: str = "docking_job",
+                     start_from: str = "mmseqs2",
+                     max_msa_seqs: int = 512) -> str:
+
+        steps = ["mmseqs2", "alphafold3", "convert", "extract", "acpype", "haddock3"]
+        skip = steps[:steps.index(start_from)]
         logger.info(f"Starting pipeline from step: '{start_from}'")
 
         try:
             af3_output = str(self.af3_dir / "predictions" / job_name)
 
-            # Step 1: AlphaFold3
+            # Step 1 — MMseqs2
+            msa_path: Optional[str] = None
+            if "mmseqs2" not in skip:
+                msa_path = self.run_mmseqs2_msa(protein_sequence, job_name,
+                                                max_seqs=max_msa_seqs)
+            else:
+                candidate = self.msa_dir / f"{job_name}_alignment.a3m"
+                if candidate.exists():
+                    msa_path = str(candidate)
+                    logger.info(f"Using cached MSA: {msa_path}")
+                else:
+                    logger.info("No cached MSA — AF3 will run its own MSA search")
+
+            # Step 2 — AlphaFold3
             if "alphafold3" not in skip:
-                json_path = self.create_af3_json(protein_sequence, smiles, job_name)
+                json_path = self.create_af3_json(protein_sequence, smiles,
+                                                 job_name, msa_path=msa_path)
                 af3_output = self.run_alphafold3(
                     job_name, json_path, singularity_image,
-                    model_params_dir, databases_dir, code_dir
+                    model_params_dir, databases_dir, code_dir,
+                    skip_data_pipeline=(msa_path is not None)
                 )
             else:
                 logger.info("Skipping AlphaFold3 — using existing outputs")
 
-            # Step 2: CIF to PDB
+            # Step 3 — CIF → PDB
             if "convert" not in skip:
-                self.patch_cif_residue_name(af3_output, job_name, old_name="LIG_B", new_name="LIG")
+                self.patch_cif_residue_name(af3_output, job_name)
                 self.convert_cif_to_pdb(af3_output, job_name)
             else:
-                logger.info("Skipping CIF conversion — using existing PDB")
+                logger.info("Skipping CIF conversion")
 
-            # Step 3: Extract ligand
+            # Step 4 — Extract ligand
             ligand_pdb = str(self.ligand_dir / f"{job_name}_ligand.pdb")
             if "extract" not in skip:
                 ligand_pdb = self.extract_ligand(af3_output, job_name)
             else:
                 logger.info(f"Skipping ligand extraction — using: {ligand_pdb}")
 
-            # Step 4: ACPYPE topology
+            # Step 5 — ACPYPE
             if "acpype" not in skip:
                 topology_files = self.run_acpype(ligand_pdb, smiles)
             else:
-                # Reconstruct topology_files dict from expected paths
                 ligand_name = Path(ligand_pdb).stem
                 acpype_subdir = self.topology_dir / ligand_name / f"{ligand_name}.acpype"
                 topology_files = {
@@ -506,25 +361,22 @@ class AF3HaddockPipeline:
                     "top": str(acpype_subdir / f"{ligand_name}_CNS.top"),
                     "acpype_dir": str(acpype_subdir)
                 }
-                logger.info(f"Skipping ACPYPE — using existing topology: {acpype_subdir}")
+                logger.info(f"Skipping ACPYPE — using: {acpype_subdir}")
 
-            # Step 5: HADDOCK3
-            protein_pdb = str(self.af3_dir / "predictions" / job_name / f"{job_name}_model.pdb")
+            # Step 6 — HADDOCK3
+            protein_pdb = str(
+                self.af3_dir / "predictions" / job_name / f"{job_name}_model.pdb"
+            )
             ligand_properties = self.calculate_ligand_properties(smiles)
+            docking_metrics = {}
             if "haddock3" not in skip:
                 docking_metrics = self.run_haddock3(
-                    job_name, protein_pdb,
-                    str(self.haddock_dir), topology_files
+                    job_name, protein_pdb, str(self.haddock_dir), topology_files
                 )
             else:
                 logger.info("Skipping HADDOCK3")
-                docking_metrics = {}
 
-            csv_path = self.generate_csv_output(
-                ligand_properties, docking_metrics, job_name
-            )
-            logger.info(f"Pipeline completed! Results: {csv_path}")
-            return csv_path
+            return self.generate_csv_output(ligand_properties, docking_metrics, job_name)
 
         except Exception as e:
             logger.error(f"Pipeline failed: {e}")
@@ -532,70 +384,33 @@ class AF3HaddockPipeline:
 
 
 def main():
-    """Main entry point for the script"""
     parser = argparse.ArgumentParser(
         description="AlphaFold3 to HADDOCK3 protein-ligand docking pipeline"
     )
-    parser.add_argument(
-        "--protein", "-p",
-        required=True,
-        help="Amino acid sequence or path to FASTA file"
-    )
-    parser.add_argument(
-        "--smiles", "-s",
-        required=True,
-        help="SMILES string for ligand"
-    )
-    parser.add_argument(
-        "--singularity-image",
-        required=True,
-        help="Path to AlphaFold3 singularity image (.sif)"
-    )
-    parser.add_argument(
-        "--model-params",
-        required=True,
-        help="Path to AlphaFold3 model parameters directory"
-    )
-    parser.add_argument(
-        "--databases",
-        required=True,
-        help="Path to sequence databases directory"
-    )
-    parser.add_argument(
-        "--code-dir",
-        required=True,
-        help="Path to directory containing AlphaFold3 code (run_alphafold.py)"
-    )
-    parser.add_argument(
-        "--output-dir", "-o",
-        default="./pipeline_output",
-        help="Output directory (default: ./pipeline_output)"
-    )
-    parser.add_argument(
-        "--job-name", "-n",
-        default="docking_job",
-        help="Job name (default: docking_job)"
-    )
+    parser.add_argument("--protein", "-p", required=True)
+    parser.add_argument("--smiles", "-s", required=True)
+    parser.add_argument("--singularity-image", required=True)
+    parser.add_argument("--model-params", required=True)
+    parser.add_argument("--databases", required=True)
+    parser.add_argument("--code-dir", required=True)
+    parser.add_argument("--output-dir", "-o", default="./pipeline_output")
+    parser.add_argument("--job-name", "-n", default="docking_job")
     parser.add_argument(
         "--start-from",
-        choices=["alphafold3", "convert", "extract", "acpype", "haddock3"],
-        default="alphafold3",
-        help="Resume pipeline from a specific step (default: alphafold3)"
+        choices=["mmseqs2", "alphafold3", "convert", "extract", "acpype", "haddock3"],
+        default="mmseqs2"
     )
-    
+    parser.add_argument("--max-msa-seqs", type=int, default=512)
+
     args = parser.parse_args()
-    
-    # Check if protein is a file or sequence
+
     if os.path.isfile(args.protein):
-        with open(args.protein, 'r') as f:
-            # Simple FASTA parser
-            protein_sequence = ''.join(line.strip() for line in f if not line.startswith('>'))
+        with open(args.protein) as f:
+            protein_sequence = ''.join(l.strip() for l in f if not l.startswith('>'))
     else:
         protein_sequence = args.protein
-    
-    # Initialize and run pipeline
+
     pipeline = AF3HaddockPipeline(output_dir=args.output_dir)
-    
     csv_path = pipeline.run_pipeline(
         protein_sequence=protein_sequence,
         smiles=args.smiles,
@@ -604,13 +419,11 @@ def main():
         databases_dir=args.databases,
         code_dir=args.code_dir,
         job_name=args.job_name,
-        start_from=args.start_from
+        start_from=args.start_from,
+        max_msa_seqs=args.max_msa_seqs
     )
-    
-    print(f"\n{'='*60}")
-    print(f"Pipeline completed successfully!")
-    print(f"Results saved to: {csv_path}")
-    print(f"{'='*60}\n")
+
+    print(f"\n{'='*60}\nPipeline completed! Results: {csv_path}\n{'='*60}\n")
 
 
 if __name__ == "__main__":
