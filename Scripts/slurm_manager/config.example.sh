@@ -41,17 +41,18 @@ export SLURM_MEMORY="32g"
 export SLURM_GPUS="1"
 
 # ==============================================================================
-# JOB MANAGEMENT
+# JOB MANAGEMENT - WORKER-BASED SYSTEM
 # ==============================================================================
 
-# Maximum concurrent GPU jobs (based on your cluster availability)
-export MAX_GPU_JOBS=20
+# Number of GPU workers (long-running jobs that process compounds sequentially)
+# Recommendation: Match number of available GPUs
+export NUM_WORKERS=5
 
-# Number of jobs to submit per batch
-export BATCH_SIZE=10
+# Database for job queue
+export DB_PATH="docking_queue.db"
 
-# Seconds between status checks
-export CHECK_INTERVAL=300
+# Worker SLURM script
+export WORKER_SCRIPT="scripts/submit_worker.sh"
 
 # ==============================================================================
 # PIPELINE CONFIGURATION
@@ -95,30 +96,4 @@ export DB_PATH="job_tracking.db"
 # export VENV_PATH="/path/to/venv"
 # source $VENV_PATH/bin/activate
 
-# ==============================================================================
-# USAGE EXAMPLES
-# ==============================================================================
 
-# After sourcing this file, you can run:
-#
-# 1. Single job submission:
-#    ./submit_single.sh test1 "MKTAYIAK..." "CC(=O)O"
-#
-# 2. Batch submission:
-#    python3 master_submit.py \
-#      --input-csv input.csv \
-#      --singularity-image $SINGULARITY_IMAGE \
-#      --model-params $MODEL_PARAMS \
-#      --databases $DATABASES \
-#      --code-dir $CODE_DIR \
-#      --max-gpu-jobs $MAX_GPU_JOBS \
-#      --batch-size $BATCH_SIZE
-#
-# 3. Resume batch:
-#    python3 master_submit.py \
-#      --input-csv input.csv \
-#      --singularity-image $SINGULARITY_IMAGE \
-#      --model-params $MODEL_PARAMS \
-#      --databases $DATABASES \
-#      --code-dir $CODE_DIR \
-#      --resume
