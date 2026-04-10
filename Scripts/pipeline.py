@@ -212,6 +212,33 @@ class AF3HaddockPipeline:
         logger.info(f"Ligand extracted: {ligand_pdb}")
         return str(ligand_pdb)
 
+    # def extract_ligand(self, smiles, job_name):
+    #     logger.info("Generating ligand structure from SMILES with Open Babel...")
+
+    #     ligand_mol2 = self.ligand_dir / f"{job_name}_ligand.mol2"
+
+    #     # Create molecule
+    #     mol = pybel.readstring("smi", smiles)
+    #     mol.addh()
+
+    #     try:
+    #         mol.make3D(forcefield="mmff94", steps=1000)
+    #         mol.localopt(forcefield="mmff94", steps=2000)
+    #     except:
+    #         logger.warning("MMFF failed, switching to UFF")
+    #         mol.make3D(forcefield="uff", steps=1000)
+    #         mol.localopt(forcefield="uff", steps=2000)
+
+    #     # remove weird geometries
+    #     mol.OBMol.DeleteHydrogens()
+    #     mol.addh()
+
+    #     mol.write("mol2", str(ligand_mol2), overwrite=True)
+
+    #     logger.info(f"Ligand generated: {ligand_mol2}")
+
+    #     return str(ligand_mol2)
+    
     def run_acpype(self, ligand_pdb_path, smiles):
         ligand_name = Path(ligand_pdb_path).stem
         mol_smiles = Chem.MolFromSmiles(smiles)
@@ -222,8 +249,10 @@ class AF3HaddockPipeline:
         acpype_output.mkdir(parents=True, exist_ok=True)
         cmd = [
             "singularity", "exec", "/users/sguirale/sw/acpype/acpype.sif",
-            "acpype", "-i", str(Path(ligand_pdb_path).resolve()),
-            "-o", "cns", "-n", str(net_charge)
+            "acpype", 
+            "-i", str(Path(ligand_pdb_path).resolve()),
+            "-o", "cns", 
+            "-n", str(net_charge)
         ]
         subprocess.run(cmd, check=True, capture_output=True, text=True,
                        cwd=str(acpype_output.resolve()))
