@@ -118,14 +118,14 @@ def main():
                 
                 pipeline.patch_cif_residue_name(af3_output, job_name)
                 pipeline.convert_cif_to_pdb(af3_output, job_name)
-                ligand_pdb = pipeline.extract_ligand(af3_output, job_name)
+                protein_pdb, ligand_pdb = pipeline.extract_chains(af3_output, job_name)
                 
-                topology_files = pipeline.run_acpype(ligand_pdb, smiles)
-                protein_pdb = str(Path(af3_output) / f"{job_name}_model.pdb")
+                # topology_files = pipeline.run_acpype(ligand_pdb, smiles)
+                # protein_pdb = str(Path(af3_output) / f"{job_name}_model.pdb")
                 
                 ligand_properties = pipeline.calculate_ligand_properties(smiles)
                 docking_metrics = pipeline.run_haddock3(
-                    job_name, protein_pdb, str(pipeline.haddock_dir), topology_files
+                    job_name, protein_pdb, ligand_pdb, str(pipeline.haddock_dir)
                 )
                 
                 pipeline.generate_csv_output(ligand_properties, docking_metrics, job_name)
