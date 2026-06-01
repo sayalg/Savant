@@ -6,6 +6,7 @@ AlphaFold3 to HADDOCK3 Protein-Ligand Docking Pipeline
 import json
 import os
 import subprocess
+import tempfile
 import sys
 import glob
 from pathlib import Path
@@ -19,9 +20,6 @@ import pandas as pd
 from Bio.PDB import PDBParser, PDBIO, Structure, Model
 import pymol
 
-# Import MMseqs2 function directly to avoid subprocess overhead
-from run_mmseqs2 import run_mmseqs2
-
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
@@ -33,12 +31,14 @@ class AF3HaddockPipeline:
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
         self.af3_dir = self.output_dir / "alphafold3"
-        self.msa_dir = self.output_dir / "msa"
+        self.msa_dir = (self.output_dir / "msa").resolve()
         self.protein_dir = self.output_dir / "proteins"
         self.ligand_dir = self.output_dir / "ligands"
         self.topology_dir = self.output_dir / "topologies"
         self.haddock_dir = self.output_dir / "haddock3"
         self.csv_dir = self.output_dir / "csv"
+        self.mmseqs2_db_path = Path("/scratch/sguirale/mmseq2_db")  # point to the DB prefix
+        self.mmseqs2_threads = 16  # tune to your CPU
 
         for d in [self.af3_dir, self.msa_dir, self.protein_dir, self.ligand_dir,
                   self.topology_dir, self.haddock_dir, self.csv_dir]:
@@ -47,24 +47,47 @@ class AF3HaddockPipeline:
     def run_mmseqs2_msa(self, protein_sequence: str, job_name: str,
                         max_seqs: int = 512) -> str:
         """
-        Call the ColabFold MMseqs2 API, cap MSA depth, and save as .a3m.
-
+        Run MMseqs2 locally against UniRef30, cap MSA depth, and save as .a3m.
         Returns the path to the saved a3m file.
         """
-        logger.info(f"Running MMseqs2 MSA generation (max_seqs={max_seqs})...")
-
-        prefix = str(self.msa_dir / job_name)
-        a3m_path = Path(f"{prefix}_alignment.a3m")
+        logger.info(f"Running local MMseqs2 MSA generation (max_seqs={max_seqs})...")
+        a3m_path = self.msa_dir / f"{job_name}_alignment.a3m"
 
         if a3m_path.exists():
-            logger.info(f"Cached MSA found, skipping API call: {a3m_path}")
+            logger.info(f"Cached MSA found, skipping: {a3m_path}")
             return str(a3m_path)
 
-        result = run_mmseqs2(protein_sequence, prefix)
-        a3m_lines: List[str] = result[0] if isinstance(result, tuple) else result
-        a3m_content = "".join(a3m_lines)
+        query_fasta = self.msa_dir / f"{job_name}_query.fasta"
+        result_dir = self.msa_dir / f"{job_name}_results"
+        result_dir.mkdir(exist_ok=True)
+        query_fasta.write_text(f">{job_name}\n{protein_sequence}\n")
 
-        # Cap MSA depth
+        cmd = [
+            "singularity", "run",
+            "-B", "/users/sguirale/alphafold2/alphafold_weights:/cache",
+            "-B", f"{self.msa_dir}:{self.msa_dir}",
+            "-B", f"{self.mmseqs2_db_path}:/tmp/mmseqs2_db",
+            "/users/sguirale/alphafold2/colabfold_1.5.5-cuda11.8.0.sif",
+            "colabfold_search",
+            str(query_fasta),
+            "/tmp/mmseqs2_db/uniref30_2302_db",   # container-side path
+            str(result_dir),
+            "--threads", str(self.mmseqs2_threads),
+        ]
+        logger.info(f"MMseqs2 command: {' '.join(cmd)}")
+        try:
+            subprocess.run(cmd, check=True, capture_output=True, text=True)
+        except subprocess.CalledProcessError as e:
+            logger.error(f"colabfold_search stderr:\n{e.stderr}")
+            logger.error(f"colabfold_search stdout:\n{e.stdout}")
+            raise
+
+        raw_a3m = result_dir / "0.a3m"
+        if not raw_a3m.exists():
+            raise FileNotFoundError(f"MMseqs2 produced no .a3m output in {result_dir}")
+        a3m_content = raw_a3m.read_text()
+
+        # Parse sequences
         sequences, current_block = [], []
         for line in a3m_content.splitlines(keepends=True):
             if line.startswith(">") and current_block:
@@ -74,13 +97,12 @@ class AF3HaddockPipeline:
         if current_block:
             sequences.append("".join(current_block))
 
+        # Cap MSA depth
         if len(sequences) > max_seqs:
             logger.info(f"Truncating MSA from {len(sequences)} → {max_seqs} sequences")
             sequences = sequences[:max_seqs]
 
-        with open(a3m_path, "w") as f:
-            f.write("".join(sequences))
-
+        a3m_path.write_text("".join(sequences))
         logger.info(f"MSA saved: {a3m_path} ({len(sequences)} sequences)")
         return str(a3m_path)
 
