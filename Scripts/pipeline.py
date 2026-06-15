@@ -73,7 +73,7 @@ class AF3HaddockPipeline:
             "/users/sguirale/alphafold2/colabfold_1.6.1-cuda12.sif",
             "colabfold_search",
             str(query_fasta),
-            "/tmp/mmseqs2_db/uniref30_2302_db",   # container-side path
+            "/tmp/mmseqs2_db",   # container-side path
             str(result_dir),
             "--threads", str(self.mmseqs2_threads),
             "--gpu", "0",
