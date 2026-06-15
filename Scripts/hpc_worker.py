@@ -71,69 +71,99 @@ def main():
     pipeline = AF3HaddockPipeline(output_dir=args.output_dir)
 
     # 4. Iterate over the chunk and execute the requested stage
-    for index, row in df_chunk.iterrows():
-        job_name = str(row['ID'])
-        protein_seq = str(row['seq'])
-        smiles = str(row['smiles'])
+    if args.stage == "msa":
+        # Create isolated subdirectories for this Slurm array task's chunk input/output
+        batch_input_dir = pipeline.msa_dir / f"batch_{task_id}_inputs"
+        batch_output_dir = pipeline.msa_dir / f"batch_{task_id}_outputs"
+        batch_input_dir.mkdir(exist_ok=True, parents=True)
+        batch_output_dir.mkdir(exist_ok=True, parents=True)
 
-        logger.info(f"--- Task {task_id}: Starting {args.stage} for {job_name} ---")
+        # Step A: Stage all individual query fastas into the batch directory first
+        logger.info(f"Task {task_id}: Preparing FASTA inputs for batch processing...")
+        for index, row in df_chunk.iterrows():
+            job_name = str(row['ID'])
+            protein_seq = str(row['seq'])
+            
+            fasta_file = batch_input_dir / f"{job_name}.fasta"
+            fasta_file.write_text(f">{job_name}\n{protein_seq}\n")
 
+        # Step B: Run colabfold_search ONCE for all 1,000 files in the directory
         try:
-            if args.stage == "msa":
-                # STAGE 1 (CPU): Generate MSA with Retries & Create JSON
-                max_retries = 5
-                for attempt in range(max_retries):
-                    try:
-                        # Jitter to prevent API DDoS
-                        time.sleep(random.uniform(10, 30))
-                        msa_path = pipeline.run_mmseqs2_msa(protein_seq, job_name)
-                        # Pre-create the JSON for the GPU step
-                        pipeline.create_af3_json(protein_seq, smiles, job_name, msa_path=msa_path)
-                        break # Success, break the retry loop
-                    except Exception as e:
-                        logger.warning(f"MSA Attempt {attempt + 1} failed for {job_name}: {e}")
-                        if attempt == max_retries - 1:
-                            raise # If all retries fail, push to outer try/except
-                        time.sleep(120 * (attempt + 1)) # Exponential backoff
-
-            elif args.stage == "af3":
-                # STAGE 2 (GPU): Run AlphaFold3 Inference
-                json_path = str(pipeline.af3_dir / f"{job_name}_input.json")
-                if not os.path.exists(json_path):
-                    raise FileNotFoundError(f"Missing JSON input for {job_name}. Did MSA step fail?")
-                
-                pipeline.run_alphafold3(
-                    job_name=job_name,
-                    json_input_path=json_path,
-                    singularity_image=args.singularity_image,
-                    model_params_dir=args.model_params,
-                    databases_dir=args.databases,
-                    code_dir=args.code_dir,
-                    skip_data_pipeline=True # Using pre-computed MSA
-                )
-
-            elif args.stage == "docking":
-                # STAGE 3 (CPU): Post-processing and HADDOCK3
-                af3_output = str(pipeline.af3_dir / "predictions" / job_name)
-                
-                pipeline.patch_cif_residue_name(af3_output, job_name)
-                pipeline.convert_cif_to_pdb(af3_output, job_name)
-                protein_pdb, ligand_pdb = pipeline.extract_chains(af3_output, job_name)
-                
-                # topology_files = pipeline.run_acpype(ligand_pdb, smiles)
-                # protein_pdb = str(Path(af3_output) / f"{job_name}_model.pdb")
-                
-                ligand_properties = pipeline.calculate_ligand_properties(smiles)
-                docking_metrics = pipeline.run_haddock3(
-                    job_name, protein_pdb, ligand_pdb, str(pipeline.haddock_dir)
-                )
-                
-                pipeline.generate_csv_output(ligand_properties, docking_metrics, job_name)
-
+            pipeline.run_mmseqs2_msa_batch(batch_input_dir, batch_output_dir)
         except Exception as e:
-            logger.error(f"Failed {job_name} at stage '{args.stage}'. Logging and skipping. Error: {e}")
-            log_failure(failure_log, job_name, args.stage, e)
-            continue # Move on to the next row in the chunk
+            logger.error(f"Task {task_id}: Batch MSA execution failed entirely. Error: {e}")
+            # Log all jobs in chunk as failed at MSA stage
+            for index, row in df_chunk.iterrows():
+                log_failure(failure_log, str(row['ID']), args.stage, f"Batch failure: {e}")
+            sys.exit(1)
+
+        # Step C: Post-process each alignment and build corresponding AF3 JSON inputs
+        logger.info(f"Task {task_id}: Post-processing alignments and generating AlphaFold3 input JSONs...")
+        for index, row in df_chunk.iterrows():
+            job_name = str(row['ID'])
+            protein_seq = str(row['seq'])
+            smiles = str(row['smiles'])
+            
+            try:
+                # colabfold_search names outputs matching the filename of inputs
+                raw_a3m = batch_output_dir / f"{job_name}.a3m" 
+                
+                # Cap the depth and place it in the pipeline's expected tracking directory
+                msa_path = pipeline.process_and_cap_a3m(raw_a3m, job_name)
+                
+                # Generate individual AF3 json inputs linking this alignment
+                pipeline.create_af3_json(protein_seq, smiles, job_name, msa_path=msa_path)
+                logger.info(f"Successfully processed MSA and generated AF3 JSON for {job_name}")
+                
+            except Exception as e:
+                logger.error(f"Failed processing {job_name} during alignment capping/JSON stage. Error: {e}")
+                log_failure(failure_log, job_name, args.stage, e)
+                continue
+
+    else:
+        for index, row in df_chunk.iterrows():
+            job_name = str(row['ID'])
+            protein_seq = str(row['seq'])
+            smiles = str(row['smiles'])
+
+            logger.info(f"--- Task {task_id}: Starting {args.stage} for {job_name} ---")
+
+            try:
+                if args.stage == "af3":
+                    # STAGE 2 (GPU): Run AlphaFold3 Inference
+                    json_path = str(pipeline.af3_dir / f"{job_name}_input.json")
+                    if not os.path.exists(json_path):
+                        raise FileNotFoundError(f"Missing JSON input for {job_name}. Did MSA step fail?")
+                    
+                    pipeline.run_alphafold3(
+                        job_name=job_name,
+                        json_input_path=json_path,
+                        singularity_image=args.singularity_image,
+                        model_params_dir=args.model_params,
+                        databases_dir=args.databases,
+                        code_dir=args.code_dir,
+                        skip_data_pipeline=True # Using pre-computed MSA
+                    )
+
+                elif args.stage == "docking":
+                    # STAGE 3 (CPU): Post-processing and HADDOCK3
+                    af3_output = str(pipeline.af3_dir / "predictions" / job_name)
+                    
+                    pipeline.patch_cif_residue_name(af3_output, job_name)
+                    pipeline.convert_cif_to_pdb(af3_output, job_name)
+                    protein_pdb, ligand_pdb = pipeline.extract_chains(af3_output, job_name)
+                    
+                    ligand_properties = pipeline.calculate_ligand_properties(smiles)
+                    docking_metrics = pipeline.run_haddock3(
+                        job_name, protein_pdb, ligand_pdb, str(pipeline.haddock_dir)
+                    )
+                    
+                    pipeline.generate_csv_output(ligand_properties, docking_metrics, job_name)
+
+            except Exception as e:
+                logger.error(f"Failed {job_name} at stage '{args.stage}'. Logging and skipping. Error: {e}")
+                log_failure(failure_log, job_name, args.stage, e)
+                continue
 
 if __name__ == "__main__":
     main()

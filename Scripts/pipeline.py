@@ -37,7 +37,10 @@ class AF3HaddockPipeline:
         self.topology_dir = self.output_dir / "topologies"
         self.haddock_dir = self.output_dir / "haddock3"
         self.csv_dir = self.output_dir / "csv"
-        self.mmseqs2_db_path = Path("/scratch/sguirale/mmseq2_db")  # point to the DB prefix
+        
+        # Speed up MMseqs2 by using a local copy of the UniRef30 database and tuning parameters for HPC
+        default_mmseqs2_db = "/scratch/sguirale/mmseq2_db"  # <-- Point this to your local MMseqs2 DB prefix
+        self.mmseqs2_db_path = Path(os.environ.get("MMSEQS2_DB", default_mmseqs2_db))  # point to the DB prefix
         self.mmseqs2_threads = 16  # tune to your CPU
 
         for d in [self.af3_dir, self.msa_dir, self.protein_dir, self.ligand_dir,
@@ -67,12 +70,15 @@ class AF3HaddockPipeline:
             "-B", "/users/sguirale/alphafold2/alphafold_weights:/cache",
             "-B", f"{self.msa_dir}:{self.msa_dir}",
             "-B", f"{self.mmseqs2_db_path}:/tmp/mmseqs2_db",
-            "/users/sguirale/alphafold2/colabfold_1.5.5-cuda11.8.0.sif",
+            "/users/sguirale/alphafold2/colabfold_1.6.1-cuda12.sif",
             "colabfold_search",
             str(query_fasta),
             "/tmp/mmseqs2_db/uniref30_2302_db",   # container-side path
             str(result_dir),
             "--threads", str(self.mmseqs2_threads),
+            "--gpu", "0",
+            "-s", "4",                     # <--- Lower sensitivity (Default is 8). Huge speedup.
+            "--db-load-mode", "3",          # <--- Tells MMseqs2 to hold the index layout efficiently in memory
         ]
         logger.info(f"MMseqs2 command: {' '.join(cmd)}")
         try:
@@ -82,9 +88,80 @@ class AF3HaddockPipeline:
             logger.error(f"colabfold_search stdout:\n{e.stdout}")
             raise
 
-        raw_a3m = result_dir / "0.a3m"
+        raw_a3m = result_dir / f"{job_name}.a3m"
         if not raw_a3m.exists():
-            raise FileNotFoundError(f"MMseqs2 produced no .a3m output in {result_dir}")
+            a3m_files = list(result_dir.glob("*.a3m"))
+            if a3m_files:
+                raw_a3m = a3m_files[0]
+            else:
+                raise FileNotFoundError(f"MMseqs2 produced no .a3m output in {result_dir}")
+                
+        a3m_content = raw_a3m.read_text()
+
+        # Parse sequences
+        sequences, current_block = [], []
+        for line in a3m_content.splitlines(keepends=True):
+            if line.startswith(">") and current_block:
+                sequences.append("".join(current_block))
+                current_block = []
+            current_block.append(line)
+        if current_block:
+            sequences.append("".join(current_block))
+
+        # Capping MSA depth
+        if len(sequences) > max_seqs:
+            logger.info(f"Truncating MSA from {len(sequences)} → {max_seqs} sequences")
+            sequences = sequences[:max_seqs]
+
+        a3m_path.write_text("".join(sequences))
+        logger.info(f"MSA saved: {a3m_path} ({len(sequences)} sequences)")
+        return str(a3m_path)
+
+    def run_mmseqs2_msa_batch(self, batch_input_dir: Path, batch_output_dir: Path) -> None:
+        """
+        Run colabfold_search in batch mode over a directory containing multiple FASTA files.
+        """
+        logger.info(f"Running batch MMseqs2 MSA generation on directory: {batch_input_dir}")
+        
+        cmd = [
+            "singularity", "exec",
+            "-B", "/users/sguirale/alphafold2/alphafold_weights:/cache",
+            "-B", f"{self.msa_dir}:{self.msa_dir}",
+            "-B", f"{self.mmseqs2_db_path}:/tmp/mmseqs2_db",
+            "/users/sguirale/alphafold2/colabfold_1.6.1-cuda12.sif",
+            "env", "MMSEQS_IGNORE_INDEX=1",
+            "colabfold_search",
+            str(batch_input_dir),
+            "/tmp/mmseqs2_db",
+            str(batch_output_dir),
+            "--threads", str(self.mmseqs2_threads),
+            "--gpu", "0",
+            "-s", "4",                     # Sensitivity 4 for massive speedup
+            "--db-load-mode", "3",          # Optimized memory paging for HPC filesystems
+            "--prefilter-mode", "1"        # MMseqs2 prefiltering for even faster batch processing
+        ]
+        
+        logger.info(f"Executing Batch MMseqs2 command: {' '.join(cmd)}")
+        try:
+            subprocess.run(cmd, check=True, capture_output=True, text=True)
+            logger.info("Batch MMseqs2 completed successfully.")
+        except subprocess.CalledProcessError as e:
+            logger.error(f"colabfold_search batch stderr:\n{e.stderr}")
+            logger.error(f"colabfold_search batch stdout:\n{e.stdout}")
+            raise
+
+    def process_and_cap_a3m(self, raw_a3m: Path, job_name: str, max_seqs: int = 512) -> str:
+        """
+        Takes a raw generated .a3m file, caps its depth, and writes it to the final tracking path.
+        """
+        a3m_path = self.msa_dir / f"{job_name}_alignment.a3m"
+        
+        if a3m_path.exists():
+            return str(a3m_path)
+            
+        if not raw_a3m.exists():
+            raise FileNotFoundError(f"Expected batch output alignment missing: {raw_a3m}")
+            
         a3m_content = raw_a3m.read_text()
 
         # Parse sequences
@@ -99,11 +176,10 @@ class AF3HaddockPipeline:
 
         # Cap MSA depth
         if len(sequences) > max_seqs:
-            logger.info(f"Truncating MSA from {len(sequences)} → {max_seqs} sequences")
+            logger.info(f"Truncating MSA for {job_name} from {len(sequences)} → {max_seqs} sequences")
             sequences = sequences[:max_seqs]
 
         a3m_path.write_text("".join(sequences))
-        logger.info(f"MSA saved: {a3m_path} ({len(sequences)} sequences)")
         return str(a3m_path)
 
     def create_af3_json(self, protein_sequence: str, smiles: str,
