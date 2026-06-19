@@ -316,85 +316,6 @@ class AF3HaddockPipeline:
 
         return str(protein_pdb), str(ligand_pdb)
 
-    # def extract_ligand(self, af3_output_dir, job_name):
-    #     logger.info("Extracting ligand from AlphaFold3 output...")
-    #     structure_file = Path(af3_output_dir) / f"{job_name}_model.pdb"
-    #     if not structure_file.exists():
-    #         raise FileNotFoundError(f"PDB not found: {structure_file}")
-    #     ligand_pdb = self.ligand_dir / f"{job_name}_ligand.pdb"
-    #     parser = PDBParser(QUIET=True)
-    #     structure = parser.get_structure("s", str(structure_file))
-    #     extracted_chain = None
-    #     for model in structure:
-    #         for chain in model:
-    #             if chain.get_id().strip().upper() == "B":
-    #                 extracted_chain = chain
-    #                 break
-    #         if extracted_chain:
-    #             break
-    #     if not extracted_chain:
-    #         raise ValueError(f"Chain B not found in {structure_file}")
-    #     new_s = Structure.Structure("ligand_only")
-    #     new_m = Model.Model(0)
-    #     new_m.add(extracted_chain.copy())
-    #     new_s.add(new_m)
-    #     io = PDBIO()
-    #     io.set_structure(new_s)
-    #     io.save(str(ligand_pdb))
-    #     logger.info(f"Ligand extracted: {ligand_pdb}")
-    #     return str(ligand_pdb)
-
-    # def extract_ligand(self, smiles, job_name):
-    #     logger.info("Generating ligand structure from SMILES with Open Babel...")
-
-    #     ligand_mol2 = self.ligand_dir / f"{job_name}_ligand.mol2"
-
-    #     # Create molecule
-    #     mol = pybel.readstring("smi", smiles)
-    #     mol.addh()
-
-    #     try:
-    #         mol.make3D(forcefield="mmff94", steps=1000)
-    #         mol.localopt(forcefield="mmff94", steps=2000)
-    #     except:
-    #         logger.warning("MMFF failed, switching to UFF")
-    #         mol.make3D(forcefield="uff", steps=1000)
-    #         mol.localopt(forcefield="uff", steps=2000)
-
-    #     # remove weird geometries
-    #     mol.OBMol.DeleteHydrogens()
-    #     mol.addh()
-
-    #     mol.write("mol2", str(ligand_mol2), overwrite=True)
-
-    #     logger.info(f"Ligand generated: {ligand_mol2}")
-
-    #     return str(ligand_mol2)
-    
-    # def run_acpype(self, ligand_pdb_path, smiles):
-    #     ligand_name = Path(ligand_pdb_path).stem
-    #     mol_smiles = Chem.MolFromSmiles(smiles)
-    #     if mol_smiles is None:
-    #         raise ValueError(f"Could not parse SMILES: {smiles}")
-    #     net_charge = Chem.GetFormalCharge(mol_smiles)
-    #     acpype_output = self.topology_dir / ligand_name
-    #     acpype_output.mkdir(parents=True, exist_ok=True)
-    #     cmd = [
-    #         "singularity", "exec", "/users/sguirale/sw/acpype/acpype.sif",
-    #         "acpype", 
-    #         "-i", str(Path(ligand_pdb_path).resolve()),
-    #         "-o", "cns", 
-    #         "-n", str(net_charge)
-    #     ]
-    #     subprocess.run(cmd, check=True, capture_output=True, text=True,
-    #                    cwd=str(acpype_output.resolve()))
-    #     acpype_subdir = acpype_output / f"{ligand_name}.acpype"
-    #     return {
-    #         "par": str(acpype_subdir / f"{ligand_name}_CNS.par"),
-    #         "top": str(acpype_subdir / f"{ligand_name}_CNS.top"),
-    #         "acpype_dir": str(acpype_subdir)
-    #     }
-
     def calculate_ligand_properties(self, smiles):
         mol = Chem.MolFromSmiles(smiles)
         if mol is None:
@@ -413,41 +334,6 @@ class AF3HaddockPipeline:
             "num_heavy_atoms": Lipinski.HeavyAtomCount(mol),
             "formal_charge": Chem.GetFormalCharge(mol),
         }
-
-    # def run_haddock3(self, job_name, protein_pdb, output_dir, topology_files):
-    #     logger.info("Running HADDOCK3 docking...")
-    #     # Create Job directory
-    #     (Path(output_dir) / job_name).mkdir(parents=True, exist_ok=True)
-        
-    #     output_dir_path = Path(output_dir) / job_name / "output"
-    #     cfg_body = f'''
-    #     run_dir = "{output_dir_path}"
-    #     mode = "local"
-    #     ncores = {os.cpu_count()}
-    #     molecules = ["{protein_pdb}"]
-    #     [topoaa]
-    #     autohis = true
-    #     ligand_param_fname = "{topology_files["par"]}"
-    #     ligand_top_fname = "{topology_files["top"]}"
-    #     [mdscoring]
-    #     ligand_param_fname = "{topology_files["par"]}"
-    #     ligand_top_fname = "{topology_files["top"]}"
-    #     nemsteps = 1
-    #     per_interface_scoring = false
-    #     '''
-    #     cfg_file = Path(output_dir) / job_name / "score.cfg"
-    #     cfg_file.write_text(cfg_body.strip())
-    #     try:
-    #         subprocess.run(["haddock3", str(cfg_file)],
-    #                        capture_output=True, text=True, check=True)
-    #         capri_ss = pd.read_csv(
-    #             output_dir_path / "analysis/1_mdscoring_analysis/capri_ss.tsv",
-    #             sep="\t"
-    #         )
-    #         return capri_ss[['score','total','vdw','elec','desolv','bsa']].iloc[0].to_dict()
-    #     except Exception as e:
-    #         logger.error(f"HADDOCK3 error: {e}")
-    #         return {}
 
     def run_haddock3(self, job_name, protein_pdb, ligand_pdb, output_dir):
         logger.info("Running HADDOCK3 docking...")
@@ -549,24 +435,10 @@ class AF3HaddockPipeline:
             else:
                 logger.info(f"Skipping chain extraction — using: {protein_pdb} and {ligand_pdb}")
 
-            # Step 5 — ACPYPE
-            # if "acpype" not in skip:
-            #     topology_files = self.run_acpype(ligand_pdb, smiles)
-            # else:
-            #     ligand_name = Path(ligand_pdb).stem
-            #     acpype_subdir = self.topology_dir / ligand_name / f"{ligand_name}.acpype"
-            #     topology_files = {
-            #         "par": str(acpype_subdir / f"{ligand_name}_CNS.par"),
-            #         "top": str(acpype_subdir / f"{ligand_name}_CNS.top"),
-            #         "acpype_dir": str(acpype_subdir)
-            #     }
-            #     logger.info(f"Skipping ACPYPE — using: {acpype_subdir}")
-
-            # Step 6 — HADDOCK3
-            # protein_pdb = str(
-            #     self.af3_dir / "predictions" / job_name / f"{job_name}_model.pdb"
-            # )
+            # Step 5 - Calculate Ligand Properties
             ligand_properties = self.calculate_ligand_properties(smiles)
+            
+            # Step 6 - Docking
             docking_metrics = {}
             if "haddock3" not in skip:
                 docking_metrics = self.run_haddock3(
@@ -575,6 +447,7 @@ class AF3HaddockPipeline:
             else:
                 logger.info("Skipping HADDOCK3")
 
+            # Step 7 - Generate final CSV
             return self.generate_csv_output(ligand_properties, docking_metrics, job_name)
 
         except Exception as e:
