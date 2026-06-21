@@ -9,6 +9,7 @@ import subprocess
 import tempfile
 import sys
 import glob
+import gzip
 from pathlib import Path
 from typing import Dict, List, Tuple, Optional
 import argparse
@@ -321,6 +322,9 @@ class AF3HaddockPipeline:
         if mol is None:
             raise ValueError(f"Invalid SMILES: {smiles}")
         mol = Chem.AddHs(mol)
+        fp = AllChem.GetMorganFingerprintAsBitVect(mol, radius=2, nBits=2048)
+        morgan_fp_dict = {f"morgan_fp_{i}": int(b) for i, b in enumerate(fp)}
+        
         return {
             "molecular_weight": Descriptors.MolWt(mol),
             "logP": Crippen.MolLogP(mol),
@@ -333,7 +337,32 @@ class AF3HaddockPipeline:
             "num_atoms": mol.GetNumAtoms(),
             "num_heavy_atoms": Lipinski.HeavyAtomCount(mol),
             "formal_charge": Chem.GetFormalCharge(mol),
+            **morgan_fp_dict,
         }
+    
+    def count_interacting_residues(self, docked_pdb: str, cutoff: float = 4.5) -> dict:
+        """Count protein residues within cutoff (Å) of the ligand (chain B)."""
+        with gzip.open(docked_pdb, 'rt') as f:
+            structure = PDBParser(QUIET=True).get_structure("docked", f)
+        model = next(iter(structure))
+
+        ligand_atoms = [atom for atom in model.get_atoms()
+                        if atom.get_full_id()[2] == "B"]
+        protein_residues = {residue for residue in model.get_residues()
+                            if residue.get_full_id()[2] == "A"}
+
+        interacting = set()
+        for res in protein_residues:
+            for p_atom in res.get_atoms():
+                for l_atom in ligand_atoms:
+                    if (p_atom.get_vector() - l_atom.get_vector()).norm() <= cutoff:
+                        interacting.add(res.get_id())
+                        break
+                else:
+                    continue
+                break
+
+        return {"num_interacting_residues": len(interacting)}
 
     def run_haddock3(self, job_name, protein_pdb, ligand_pdb, output_dir):
         logger.info("Running HADDOCK3 docking...")
@@ -437,7 +466,7 @@ class AF3HaddockPipeline:
 
             # Step 5 - Calculate Ligand Properties
             ligand_properties = self.calculate_ligand_properties(smiles)
-            
+
             # Step 6 - Docking
             docking_metrics = {}
             if "haddock3" not in skip:
@@ -446,9 +475,17 @@ class AF3HaddockPipeline:
                 )
             else:
                 logger.info("Skipping HADDOCK3")
+            
+            # Step 7 - Get protein-ligand residue interactions
+            # Count interacting residues from docked structure
+            interaction_metrics = {}
+            if "haddock3" not in skip:
+                # Use the HADDOCK output PDB — adjust path to match your emref output
+                docked_pdb = str(self.haddock_dir / job_name / "output" / "1_emref" / "emref_1.pdb.gz")
+                interaction_metrics = self.count_interacting_residues(docked_pdb)
 
             # Step 7 - Generate final CSV
-            return self.generate_csv_output(ligand_properties, docking_metrics, job_name)
+            return self.generate_csv_output({**ligand_properties, **interaction_metrics}, docking_metrics, job_name)
 
         except Exception as e:
             logger.error(f"Pipeline failed: {e}")

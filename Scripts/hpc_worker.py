@@ -154,11 +154,20 @@ def main():
                     protein_pdb, ligand_pdb = pipeline.extract_chains(af3_output, job_name)
                     
                     ligand_properties = pipeline.calculate_ligand_properties(smiles)
+
                     docking_metrics = pipeline.run_haddock3(
                         job_name, protein_pdb, ligand_pdb, str(pipeline.haddock_dir)
                     )
-                    
-                    pipeline.generate_csv_output(ligand_properties, docking_metrics, job_name)
+
+                    interaction_metrics = pipeline.count_interacting_residues(
+                        str(pipeline.haddock_dir / job_name / "output" / "1_emref" / "emref_1.pdb.gz")
+                    )
+
+                    pipeline.generate_csv_output(
+                        {**ligand_properties, **interaction_metrics},
+                        docking_metrics,
+                        job_name
+                    )
 
             except Exception as e:
                 logger.error(f"Failed {job_name} at stage '{args.stage}'. Logging and skipping. Error: {e}")
