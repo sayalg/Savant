@@ -4,6 +4,7 @@ import sys
 import gzip
 import logging
 from pathlib import Path
+import json
 
 import pandas as pd
 from rdkit import Chem
@@ -56,7 +57,15 @@ def count_interacting_residues(haddock_dir: str, job_name: str) -> int | None:
 
     return len(interacting)
 
-def combine_csv(directory, csv_file, haddock_dir):
+def get_iptm(af3_dir: str, job_name: str) -> float | None:
+    confidence_json = Path(af3_dir) / "predictions" / job_name / f"{job_name}_summary_confidences_0.json"
+    if not confidence_json.exists():
+        logger.warning(f"No confidence JSON found for {job_name}")
+        return None
+    with open(confidence_json) as f:
+        return json.load(f).get("iptm")
+    
+def combine_csv(directory, csv_file, haddock_dir, alphafold_dir):
     """Combine all CSV files in a directory into a single file."""
     csv_files = [f for f in os.listdir(directory) if f.endswith('.csv')]
 
@@ -82,12 +91,16 @@ def combine_csv(directory, csv_file, haddock_dir):
         lambda job_id: count_interacting_residues(haddock_dir, job_id)
     )
 
+    combined['iptm'] = combined['Job_ID'].map(
+        lambda job_id: get_iptm(alphafold_dir, job_id)
+    )
+
     combined.to_csv('combined.csv', index=False)
     print(f"Combined {len(csv_files)} CSV files into combined.csv")
 
 if __name__ == "__main__":
     if len(sys.argv) < 4:
-        print("Usage: python3 combine_csv.py <directory> <csv_file> <haddock_dir>")
+        print("Usage: python3 combine_csv.py <directory> <csv_file> <haddock_dir> <alphafold_dir>")
         sys.exit(1)
 
-    combine_csv(sys.argv[1], sys.argv[2], sys.argv[3])
+    combine_csv(sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4])
