@@ -40,7 +40,7 @@ Confirm the input paths in `config.yaml` point to your copies of `Input/input.cs
 and `ML_model/combined_50k_filtered.csv` (defaults assume the repo layout).
 
 ## Run
-1. **Download BindingDB on a login node** (compute nodes usually have no internet):
+1. **Download BindingDB**:
    ```bash
    conda activate savant-benchmark
    python scripts/02_download_bindingdb.py --config config.yaml
@@ -81,5 +81,4 @@ and `ML_model/combined_50k_filtered.csv` (defaults assume the repo layout).
   kept), so step 01 is memory-light despite the ~1.3 GB file.
 - BindingDB Kd values pinned at round caps (10/100/1000/10000 µM) are collapsed
   ">X" censored measurements and are dropped; only precise Kd values are used.
-- The Kd→pKd conversion is `pKd = 9 − log10(Kd[nM])`; ΔG = `−1.364 × pKd` (298 K),
-  per `research_design.md`.
+- The Kd→pKd conversion is `pKd = 6 − log10(Kd[nM])`; ΔG = `−1.364 × pKd` (298 K).
