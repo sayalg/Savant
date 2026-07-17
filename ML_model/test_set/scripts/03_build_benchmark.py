@@ -231,7 +231,7 @@ def main(config_path):
     n0 = len(bdb)
     caps = set(fi["drop_censor_caps_nM"])
     bdb = bdb[(bdb["kd_nM"] > 0) & (~bdb["kd_nM"].isin(caps)) & bdb["smiles"].notna() & bdb["target_seq"].notna()]
-    bdb["neg_log10_affinity_M"] = (9 - np.log10(bdb["kd_nM"])).round(3)
+    bdb["neg_log10_affinity_M"] = (6 - np.log10(bdb["kd_nM"])).round(3)
     log(f"[03] Kd rows {n0} -> {len(bdb)} after dropping non-positive / censor-cap values")
     log(f"[03] unique targets={bdb['target_seq'].nunique()} unique ligands={bdb['smiles'].nunique()}")
 
