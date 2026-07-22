@@ -1,0 +1,29 @@
+[tool.poetry]
+name = "savant"
+version = "0.1.0"
+description = "Score an already-docked protein-ligand complex with RDKit + HADDOCK3 and emit a single feature table."
+authors = ["Sayal Guirales <erikaeymee@yahoo.com>"]
+readme = "README.md"
+packages = [{ include = "savant" }]
+
+# Python is capped at <3.15 because haddock3 (a hard runtime dependency)
+# supports 3.10-3.14 only.
+[tool.poetry.dependencies]
+python = ">=3.10,<3.15"
+click = "^8.1"
+biopython = "^1.83"
+pandas = "^2.0"
+rdkit = ">=2023.3"
+
+# HADDOCK3 is a hard dependency of Savant but is LINUX-ONLY. The platform
+# marker means `poetry install` installs it on Linux (e.g. your HPC) and skips
+# it on Windows/macOS dev machines, where it cannot build or run. Savant shells
+# out to the `haddock3` executable it provides.
+haddock3 = { version = ">=2026.3.0", markers = "sys_platform == 'linux'" }
+
+[tool.poetry.scripts]
+savant = "savant.cli:main"
+
+[build-system]
+requires = ["poetry-core>=1.5.0"]
+build-backend = "poetry.core.masonry.api"
