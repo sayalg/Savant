@@ -154,13 +154,17 @@ def protein_overlap_biopython(cfg, target_seqs):
 
 
 def best_train_identity(cfg, seqs):
-    """Best identity of each seq to any training chain (for annotating the selected set)."""
+    """Best identity of each seq to any training chain (for annotating the selected set).
+
+    Cached per unique sequence so repeated targets (many ligands share one target)
+    are aligned only once.
+    """
     fi = cfg["filters"]
     train = [l.strip() for l in open(cfg["paths"]["training_fasta"]) if l and not l.startswith(">")]
     tl = np.array([len(c) for c in train])
     aln = _aligner()
-    out = []
-    for s in seqs:
+    cache = {}
+    for s in set(seqs):
         q = sanitize_seq(s)
         L = len(q)
         idx = np.where((tl >= 0.5 * L) & (tl <= 2.0 * L))[0]   # wider band, just for reporting
@@ -168,8 +172,8 @@ def best_train_identity(cfg, seqs):
         for j in idx:
             iden, _, _ = _id_cov(aln, q, train[j])
             best = max(best, iden)
-        out.append(round(best, 3))
-    return out
+        cache[s] = round(best, 3)
+    return [cache[s] for s in seqs]
 
 
 # --------------------------------------------------------------------------- #
