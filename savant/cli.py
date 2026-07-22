@@ -65,7 +65,7 @@ from savant.pipeline import run_pipeline
     type=int,
     default=50,
     show_default=True,
-    help="Energy-minimisation steps for the HADDOCK3 emref module.",
+    help="Energy-minimization steps for the HADDOCK3 emref module.",
 )
 @click.option("-v", "--verbose", is_flag=True, help="Enable debug logging.")
 @click.version_option(__version__, "-V", "--version")
