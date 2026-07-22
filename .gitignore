@@ -1,3 +1,4 @@
+.vscode
 .DS_Store
 Input/all.csv
 Input/all.parquet
