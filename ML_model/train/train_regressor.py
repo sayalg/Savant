@@ -32,7 +32,7 @@ model = Pipeline([
         "regressor",
         xgb.XGBRegressor(
             tree_method="auto",
-            n_estimators=10000,
+            n_estimators=1000,
         ),
     ),
 ])
