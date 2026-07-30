@@ -49,7 +49,7 @@ def main():
 
     parser.add_argument(
         "--model",
-        default="../mango_sponge_66k38p1d_local.pkl",
+        default="../train/mango_sponge_66k38p1d_local.pkl",
         help="Path to trained Savant regression model (.pkl)",
     )
 
