@@ -14,6 +14,8 @@ click = "^8.1"
 biopython = "^1.83"
 pandas = "^2.0"
 rdkit = ">=2023.3"
+scikit-learn = ">=1.6.1"
+xgboost = ">=3.3.0"
 
 # HADDOCK3 is a hard dependency of Savant but is LINUX-ONLY. The platform
 # marker means `poetry install` installs it on Linux (e.g. your HPC) and skips
