@@ -30,7 +30,7 @@ def main():
 
     parser.add_argument(
         "--model",
-        default="../tender_comb_63w6mzz3.pkl",
+        default="../tender_comb_63w6mzz3_local.pkl",
         help="Path to trained model (.pkl file)",
     )
 
