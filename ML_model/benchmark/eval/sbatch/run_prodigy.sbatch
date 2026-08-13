@@ -18,8 +18,6 @@ set -euo pipefail
 #
 #   sbatch sbatch/run_prodigy.sbatch
 # --------------------------------------------------------------
-
-cd "$(dirname "$0")/.."          # ML_model/benchmark/eval
 mkdir -p logs
 
 command -v prodigy_lig >/dev/null || { echo "prodigy_lig not on PATH (pip install prodigy-lig)" >&2; exit 1; }

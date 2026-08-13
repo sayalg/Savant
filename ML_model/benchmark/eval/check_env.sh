@@ -51,8 +51,20 @@ fi
 
 echo
 echo "== gpu =="
+python -c "import torch; print('  torch', torch.__version__, '| built for CUDA', torch.version.cuda)" 2>/dev/null \
+    || echo "  torch not importable"
 if command -v nvidia-smi >/dev/null 2>&1; then
-    nvidia-smi --query-gpu=name,memory.total --format=csv,noheader | sed 's/^/  /'
+    nvidia-smi --query-gpu=name,driver_version,memory.total --format=csv,noheader | sed 's/^/  /'
+    # The driver's CUDA capability, which must be >= the CUDA torch was built for.
+    nvidia-smi 2>/dev/null | sed -n 's/.*CUDA Version: *\([0-9.]*\).*/  driver supports CUDA \1/p'
+    if python -c "import torch; torch.zeros(1, device='cuda')" 2>/dev/null; then
+        note "cuda usable from torch" "OK"; ok=$((ok + 1))
+    else
+        note "cuda usable from torch" "FAILS - torch/driver CUDA mismatch; reinstall torch"
+        echo "      for the driver's CUDA, e.g.  pip install --force-reinstall --no-deps \\"
+        echo "        torch==<same version> --index-url https://download.pytorch.org/whl/cu128"
+        fail=$((fail + 1))
+    fi
 else
     echo "  no nvidia-smi (expected on a login node; Boltz needs a GPU node)"
 fi

@@ -26,8 +26,6 @@ set -euo pipefail
 
 export BOLTZ_CACHE="${BOLTZ_CACHE:-$HOME/.boltz}"
 # --------------------------------------------------------
-
-cd "$(dirname "$0")/.."          # ML_model/benchmark/eval
 mkdir -p logs work/boltz
 
 SHARD=$(printf "shard_%02d" "${SLURM_ARRAY_TASK_ID:-0}")
@@ -39,17 +37,58 @@ if [ ! -d "${IN_DIR}" ]; then
     exit 1
 fi
 
-# Fail early and loudly if the YAMLs point at MSAs that were never fetched -
-# otherwise boltz burns a GPU allocation before erroring on the first input.
-FIRST_MSA=$(grep -h -m1 '^\s*msa:' "${IN_DIR}"/*.yaml 2>/dev/null | sed "s/.*msa: *'\(.*\)'/\1/" || true)
-if [ -n "${FIRST_MSA}" ] && [ ! -s "${FIRST_MSA}" ]; then
-    echo "YAMLs reference ${FIRST_MSA}, which is missing or empty." >&2
-    echo "Run 02_fetch_msas.py first, or re-run 01 with --msa-mode server." >&2
-    exit 1
+# Check the MSAs the YAMLs point at before boltz burns a GPU allocation on an
+# input it cannot load. Every `msa:` line in the shard is resolved (one sed over
+# the shard, then one stat per distinct path).
+N_REF=0
+N_MISSING=0
+MISSING_EXAMPLE=""
+while IFS= read -r msa; do
+    [ -n "${msa}" ] || continue
+    N_REF=$((N_REF + 1))
+    if [ ! -s "${msa}" ]; then
+        N_MISSING=$((N_MISSING + 1))
+        [ -n "${MISSING_EXAMPLE}" ] || MISSING_EXAMPLE="${msa}"
+    fi
+done <<EOF
+$(sed -n "s/^[[:space:]]*msa:[[:space:]]*'\(.*\)'[[:space:]]*\$/\1/p" "${IN_DIR}"/*.yaml \
+  2>/dev/null | sort -u)
+EOF
+
+if [ "${N_MISSING}" -gt 0 ]; then
+    echo "${N_MISSING} of ${N_REF} referenced MSAs are missing or empty, e.g. ${MISSING_EXAMPLE}" >&2
+    if [ "${N_MISSING}" -eq "${N_REF}" ]; then
+        echo "None are present - run 02_fetch_msas.py first, or re-run 01 with --msa-mode server." >&2
+        exit 1
+    fi
+    echo "Continuing: boltz will fail on those inputs only. Re-run 02_fetch_msas.py "\
+         "to fill the gaps, then re-submit this shard to pick them up." >&2
 fi
 
 echo "== boltz predict: ${IN_DIR} -> ${OUT_DIR} ($(ls "${IN_DIR}" | wc -l) inputs) =="
-nvidia-smi --query-gpu=name,memory.total --format=csv,noheader || true
+nvidia-smi --query-gpu=name,driver_version,memory.total --format=csv,noheader || true
+
+# Touch the GPU through torch before boltz does. A torch built against a newer
+# CUDA than the node's driver supports only fails once Lightning sets up the
+# device - after model load, minutes into the allocation - and the traceback
+# points at Lightning rather than at the real problem.
+python - <<'PY' || exit 1
+import sys
+import torch
+
+try:
+    torch.zeros(1, device="cuda")
+except RuntimeError as exc:
+    sys.exit(
+        f"CUDA unusable: {exc}\n\n"
+        f"torch {torch.__version__} is built against CUDA {torch.version.cuda}. "
+        "If the driver is older than that, reinstall torch for the driver's CUDA "
+        "version, e.g. for a 12.8 driver:\n"
+        f"  pip install --force-reinstall --no-deps torch=={torch.__version__.split('+')[0]} "
+        "--index-url https://download.pytorch.org/whl/cu128"
+    )
+print(f"torch {torch.__version__} (CUDA {torch.version.cuda}) on {torch.cuda.get_device_name(0)}")
+PY
 
 # --output_format pdb: HADDOCK3 (inside Savant) needs PDB, and PRODIGY-LIG is
 #   happier with it. The chain ids and the HETATM/LIG ligand residue that both

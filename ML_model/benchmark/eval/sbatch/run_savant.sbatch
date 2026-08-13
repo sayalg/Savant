@@ -22,8 +22,6 @@ set -euo pipefail
 #
 #   sbatch sbatch/run_savant.sbatch
 # -------------------------------------------------------------------
-
-cd "$(dirname "$0")/.."          # ML_model/benchmark/eval
 mkdir -p logs
 
 NUM_SHARDS="${NUM_SHARDS:-20}"
