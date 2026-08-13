@@ -1,0 +1,7 @@
+# Bulk download + intermediates: regenerate with scripts/01..05
+work/bindingdb_kd.tsv
+work/candidates.csv
+work/*.log
+
+# API response cache (thousands of small JSON files; resumable, not source)
+cache/
