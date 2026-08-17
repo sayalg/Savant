@@ -57,12 +57,16 @@ if command -v nvidia-smi >/dev/null 2>&1; then
     nvidia-smi --query-gpu=name,driver_version,memory.total --format=csv,noheader | sed 's/^/  /'
     # The driver's CUDA capability, which must be >= the CUDA torch was built for.
     nvidia-smi 2>/dev/null | sed -n 's/.*CUDA Version: *\([0-9.]*\).*/  driver supports CUDA \1/p'
-    if python -c "import torch; torch.zeros(1, device='cuda')" 2>/dev/null; then
+    python -c "import torch; print('  this GPU is sm_%d%d; torch has kernels for' % torch.cuda.get_device_capability(0), ', '.join(torch.cuda.get_arch_list()))" 2>/dev/null || true
+    if python -c "import torch; torch.zeros(1, device='cuda').add_(1)" 2>/dev/null; then
         note "cuda usable from torch" "OK"; ok=$((ok + 1))
     else
-        note "cuda usable from torch" "FAILS - torch/driver CUDA mismatch; reinstall torch"
-        echo "      for the driver's CUDA, e.g.  pip install --force-reinstall --no-deps \\"
-        echo "        torch==<same version> --index-url https://download.pytorch.org/whl/cu128"
+        note "cuda usable from torch" "FAILS - see the two lines above"
+        echo "      sm_XX not in the kernel list -> this GPU is too old for this torch;"
+        echo "        request a newer one (sinfo -p GPU -o '%20N %25f %15G')"
+        echo "      sm_XX IS in the list -> torch/driver CUDA mismatch; reinstall torch"
+        echo "        pip install --force-reinstall --no-deps torch==<same version> \\"
+        echo "          --index-url https://download.pytorch.org/whl/cu128"
         fail=$((fail + 1))
     fi
 else

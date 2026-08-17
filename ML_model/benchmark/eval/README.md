@@ -75,14 +75,35 @@ blocks the ColabFold server entirely, run step 01 with `--msa-mode server` and s
 **3. Boltz-2** (the long pole — one GPU-hour or so per few pairs):
 
 ```bash
-sbatch --array=0-24 sbatch/run_boltz.sbatch
+sbatch --array=0-25 sbatch/run_boltz.sbatch
 python scripts/03_collect_boltz.py
 ```
+
+Use the `--array` range step 1 printed, not `--num-shards`. The two differ
+because **a shard cannot mix affinity and non-affinity records**: Boltz enters
+its affinity stage if *any* record in the input directory requests affinity,
+then iterates *every* record in that directory and loads a
+`pre_affinity_<id>.npz` that only affinity records are ever given. One
+oversized ligand among 39 normal ones kills the whole task partway through with
+a `FileNotFoundError`. Step 1 therefore puts the 37 ligands above the
+128-heavy-atom limit in their own shard, where `any(record.affinity)` is False
+and the affinity stage is skipped entirely; `work/shards.csv` records the split
+and the job re-checks it before spending the allocation.
 
 Targets run 86–1951 aa (68 pairs are over 1200), so the tail of the distribution
 is what sets the memory and walltime you need — if tasks OOM, raise `--mem`,
 ask for the larger GPU, and re-submit only the affected shards; completed pairs
 are skipped.
+
+The job prunes unresumable prediction directories before it starts, via
+`scripts/prune_partial_boltz.py`. That is not optional bookkeeping: Boltz skips a
+record whose `predictions/<id>/` directory merely *exists*, but queues its
+affinity unless `affinity_<id>.json` exists. A directory left half-written by a
+killed run therefore makes the affinity stage look for a `pre_affinity_<id>.npz`
+that the skipped structure stage never wrote, and that `FileNotFoundError` takes
+down the whole array task. The pruner deletes exactly those directories and
+leaves finished work alone; run it by hand with `--dry-run` to see what it would
+remove.
 
 `--array` must be `0-(num_shards-1)` from step 1. `03` writes
 `work/structures/<id>.pdb` plus `work/boltz_scores.csv` (confidence + affinity),

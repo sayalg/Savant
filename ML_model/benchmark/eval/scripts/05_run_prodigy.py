@@ -37,19 +37,34 @@ from common import (LIGAND_CHAIN, LIGAND_RESNAME, MANIFEST, PRODIGY_RESULTS, PRO
                     slurm_shard, take_shard, write_json)
 
 
-def parse_output(stdout: str) -> tuple[float, float]:
-    """Pull (DGprediction, DGscore) out of prodigy_lig's tab-separated report."""
+def parse_output(stdout: str) -> tuple[float, float | None]:
+    """Pull (DGprediction, DGscore) out of prodigy_lig's tab-separated report.
+
+    The columns depend on which scoring function ran, so they are matched by
+    name rather than position:
+
+        no -e   Job name <tab> DGprediction (low refinement) (Kcal/mol)
+        with -e Job name <tab> DGprediction (Kcal/mol) <tab> DGscore
+
+    Verbose mode appends ten contact-count columns to either form. DGscore is
+    None when the run did not produce one.
+    """
     lines = [ln for ln in stdout.splitlines() if ln.strip()]
     for i, line in enumerate(lines):
-        if "DGprediction" in line and i + 1 < len(lines):
-            fields = lines[i + 1].split("\t")
-            if len(fields) >= 3:
-                return float(fields[1]), float(fields[2])
+        if "DGprediction" not in line or i + 1 >= len(lines):
+            continue
+        row = dict(zip((h.strip() for h in line.split("\t")),
+                       (v.strip() for v in lines[i + 1].split("\t"))))
+        dg = next((v for k, v in row.items() if k.startswith("DGprediction")), None)
+        if dg is None:
+            continue
+        dgscore = row.get("DGscore")
+        return float(dg), float(dgscore) if dgscore else None
     raise ValueError(f"unrecognised prodigy_lig output: {stdout.strip()[:200]!r}")
 
 
 def run_prodigy(binary: str, pdb: str, cutoff: float, elec: float | None,
-                timeout: int) -> tuple[float, float]:
+                timeout: int) -> tuple[float, float | None]:
     cmd = [
         binary,
         "-i", pdb,

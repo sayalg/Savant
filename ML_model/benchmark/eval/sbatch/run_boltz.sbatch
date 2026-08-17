@@ -6,22 +6,30 @@
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=64G
 #SBATCH --gres=gpu:1
-#SBATCH --array=0-24
+#SBATCH --constraint=FP32
+#SBATCH --array=0-25
 #SBATCH --partition=GPU
+# The GPU partition is mixed hardware. Recent torch wheels carry no Volta
+# (sm_70) kernels, so a task landing on a V100 dies before it starts; Boltz also
+# wants bf16, which Volta lacks. Pin the type to Ampere or newer - list what the
+# partition has with:  sinfo -p GPU -o '%20N %25f %15G'
+# #SBATCH --gres=gpu:A40:1
 # --------------------------------------------------------
 set -euo pipefail
 
 # Stage 1 of 3: predict every complex with Boltz-2.
 #
-# One array task per YAML shard from 01_prepare_inputs.py. --array MUST be
-# 0-(num_shards-1) and match the --num-shards used there; the task id is the
-# shard directory name.
+# One array task per YAML shard from 01_prepare_inputs.py, which prints the
+# exact --array range to use; the task id is the shard directory name. That
+# range is NOT --num-shards: step 01 adds extra shards to hold the ligands too
+# large for the affinity head, which cannot share a directory with the rest.
 #
-# Resume is free: `boltz predict` skips any input that already has a prediction
-# unless --override is passed, so a requeued or timed-out task picks up where it
-# stopped. Re-run the same sbatch to fill gaps.
+# Resumable: `boltz predict` skips inputs that already have a prediction, so a
+# requeued or timed-out task picks up where it stopped. Re-run the same sbatch to
+# fill gaps. The prune step below is what makes that safe - boltz's own skip test
+# is satisfied by a directory that merely exists, half-written or not.
 #
-#   sbatch --array=0-24 sbatch/run_boltz.sbatch
+#   sbatch --array=0-25 sbatch/run_boltz.sbatch
 #   sbatch --array=7,13 sbatch/run_boltz.sbatch     # just those shards
 
 export BOLTZ_CACHE="${BOLTZ_CACHE:-$HOME/.boltz}"
@@ -65,29 +73,72 @@ if [ "${N_MISSING}" -gt 0 ]; then
          "to fill the gaps, then re-submit this shard to pick them up." >&2
 fi
 
+# A shard must be homogeneous in affinity. Boltz enters its affinity stage if ANY
+# record in the directory requests affinity, then iterates EVERY record in it and
+# loads a pre_affinity_<id>.npz that only affinity records are given - so one
+# oversized ligand among 39 normal ones kills the task partway through with
+# FileNotFoundError. 01_prepare_inputs.py separates them; this catches a stale or
+# hand-edited shard before the allocation is spent.
+N_YAML=$(find "${IN_DIR}" -maxdepth 1 -name '*.yaml' | wc -l)
+N_AFFINITY=$(grep -l '^properties:' "${IN_DIR}"/*.yaml 2>/dev/null | wc -l)
+if [ "${N_AFFINITY}" -ne 0 ] && [ "${N_AFFINITY}" -ne "${N_YAML}" ]; then
+    echo "${IN_DIR} mixes affinity and non-affinity inputs (${N_AFFINITY} of ${N_YAML})." >&2
+    echo "Re-run: python scripts/01_prepare_inputs.py --num-shards <N>" >&2
+    exit 1
+fi
+
+# Clear out prediction dirs a killed run left half-written. boltz skips a record
+# whose predictions/<id>/ merely EXISTS, but queues affinity unless
+# affinity_<id>.json exists - so a half-finished dir makes the affinity stage
+# look for a pre_affinity_<id>.npz the skipped structure stage never wrote, and
+# that FileNotFoundError kills the whole task.
+python scripts/prune_partial_boltz.py --shard "${SHARD}"
+
 echo "== boltz predict: ${IN_DIR} -> ${OUT_DIR} ($(ls "${IN_DIR}" | wc -l) inputs) =="
 nvidia-smi --query-gpu=name,driver_version,memory.total --format=csv,noheader || true
 
-# Touch the GPU through torch before boltz does. A torch built against a newer
-# CUDA than the node's driver supports only fails once Lightning sets up the
-# device - after model load, minutes into the allocation - and the traceback
-# points at Lightning rather than at the real problem.
+# Touch the GPU through torch before boltz does. Both ways this can fail - a
+# torch built for a newer CUDA than the driver, or a GPU whose compute
+# capability this torch has no kernels for - otherwise surface only once
+# Lightning sets up the device, minutes into the allocation, with a traceback
+# that points at Lightning rather than at the real problem.
 python - <<'PY' || exit 1
 import sys
 import torch
 
+if not torch.cuda.is_available():
+    sys.exit("torch cannot see a GPU on this node (--gres=gpu:1 not honoured?)")
+
+name = torch.cuda.get_device_name(0)
+major, minor = torch.cuda.get_device_capability(0)
+arch_list = torch.cuda.get_arch_list()
+
 try:
-    torch.zeros(1, device="cuda")
+    torch.zeros(1, device="cuda").add_(1)
 except RuntimeError as exc:
-    sys.exit(
-        f"CUDA unusable: {exc}\n\n"
-        f"torch {torch.__version__} is built against CUDA {torch.version.cuda}. "
-        "If the driver is older than that, reinstall torch for the driver's CUDA "
-        "version, e.g. for a 12.8 driver:\n"
-        f"  pip install --force-reinstall --no-deps torch=={torch.__version__.split('+')[0]} "
-        "--index-url https://download.pytorch.org/whl/cu128"
-    )
-print(f"torch {torch.__version__} (CUDA {torch.version.cuda}) on {torch.cuda.get_device_name(0)}")
+    lines = [f"CUDA unusable on {name} (compute capability {major}.{minor}): {exc}", ""]
+    if f"sm_{major}{minor}" not in arch_list:
+        # Mixed-hardware partitions hand out whatever is free; recent torch
+        # wheels no longer carry Volta (sm_70) kernels.
+        lines += [
+            f"torch {torch.__version__} ships kernels for {', '.join(arch_list)} - "
+            f"nothing for sm_{major}{minor}. This is the GPU, not the driver.",
+            "Request a GPU torch supports, e.g.:",
+            "  sbatch --gres=gpu:A40:1 --array=... sbatch/run_boltz.sbatch",
+            "See what the partition offers with:  sinfo -p GPU -o '%20N %25f %15G'",
+        ]
+    else:
+        lines += [
+            f"torch {torch.__version__} is built against CUDA {torch.version.cuda}; "
+            "if the driver is older, reinstall torch for the driver's CUDA:",
+            f"  pip install --force-reinstall --no-deps "
+            f"torch=={torch.__version__.split('+')[0]} "
+            "--index-url https://download.pytorch.org/whl/cu128",
+        ]
+    sys.exit("\n".join(lines))
+
+print(f"torch {torch.__version__} (CUDA {torch.version.cuda}) on {name} "
+      f"(sm_{major}{minor}), bf16 supported: {torch.cuda.is_bf16_supported()}")
 PY
 
 # --output_format pdb: HADDOCK3 (inside Savant) needs PDB, and PRODIGY-LIG is

@@ -30,6 +30,7 @@ BOLTZ_DIR = os.path.join(WORK, "boltz")          # raw boltz output trees
 STRUCT_DIR = os.path.join(WORK, "structures")    # canonical <id>.pdb
 MANIFEST = os.path.join(WORK, "manifest.csv")
 TARGETS_CSV = os.path.join(WORK, "targets.csv")
+SHARDS_CSV = os.path.join(WORK, "shards.csv")
 BOLTZ_SCORES = os.path.join(WORK, "boltz_scores.csv")
 
 RESULTS = os.path.join(WORK, "results")

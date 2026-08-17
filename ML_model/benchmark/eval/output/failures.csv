@@ -1,0 +1,106 @@
+benchmark_id,error
+bm_0185,no structure (Boltz stage incomplete)
+bm_0975,no structure (Boltz stage incomplete)
+bm_0991,no structure (Boltz stage incomplete)
+bm_0006,no structure (Boltz stage incomplete)
+bm_0007,no structure (Boltz stage incomplete)
+bm_0008,no structure (Boltz stage incomplete)
+bm_0100,no structure (Boltz stage incomplete)
+bm_0101,no structure (Boltz stage incomplete)
+bm_0103,no structure (Boltz stage incomplete)
+bm_0104,no structure (Boltz stage incomplete)
+bm_0105,no structure (Boltz stage incomplete)
+bm_0108,no structure (Boltz stage incomplete)
+bm_0112,no structure (Boltz stage incomplete)
+bm_0114,no structure (Boltz stage incomplete)
+bm_0115,no structure (Boltz stage incomplete)
+bm_0116,no structure (Boltz stage incomplete)
+bm_0117,no structure (Boltz stage incomplete)
+bm_0118,no structure (Boltz stage incomplete)
+bm_0119,no structure (Boltz stage incomplete)
+bm_0168,no structure (Boltz stage incomplete)
+bm_0172,no structure (Boltz stage incomplete)
+bm_0177,no structure (Boltz stage incomplete)
+bm_0178,no structure (Boltz stage incomplete)
+bm_0298,no structure (Boltz stage incomplete)
+bm_0698,no structure (Boltz stage incomplete)
+bm_0699,no structure (Boltz stage incomplete)
+bm_0700,no structure (Boltz stage incomplete)
+bm_0701,no structure (Boltz stage incomplete)
+bm_0702,no structure (Boltz stage incomplete)
+bm_0703,no structure (Boltz stage incomplete)
+bm_0793,no structure (Boltz stage incomplete)
+bm_0900,no structure (Boltz stage incomplete)
+bm_0927,no structure (Boltz stage incomplete)
+bm_0933,no structure (Boltz stage incomplete)
+bm_0968,no structure (Boltz stage incomplete)
+bm_0969,no structure (Boltz stage incomplete)
+bm_0970,no structure (Boltz stage incomplete)
+bm_0971,no structure (Boltz stage incomplete)
+bm_0980,no structure (Boltz stage incomplete)
+bm_0985,no structure (Boltz stage incomplete)
+bm_0384,"exit 1: 2026-08-16 17:42:35,894 - ERROR - Savant failed: HADDOCK3 exited with code 1"
+bm_0006,no structure (Boltz stage incomplete)
+bm_0185,no structure (Boltz stage incomplete)
+bm_0466,"exit 1: 2026-08-16 17:44:03,690 - ERROR - Savant failed: HADDOCK3 exited with code 1"
+bm_0007,no structure (Boltz stage incomplete)
+bm_0008,no structure (Boltz stage incomplete)
+bm_0100,no structure (Boltz stage incomplete)
+bm_0629,"exit 1: 2026-08-16 17:45:47,874 - ERROR - Savant failed: HADDOCK3 exited with code 1"
+bm_0101,no structure (Boltz stage incomplete)
+bm_0550,"exit 1: 2026-08-16 17:44:47,137 - ERROR - Savant failed: HADDOCK3 exited with code 1"
+bm_0630,"exit 1: 2026-08-16 17:45:43,416 - ERROR - Savant failed: HADDOCK3 exited with code 1"
+bm_0837,"exit 1: 2026-08-16 17:46:55,859 - ERROR - Savant failed: HADDOCK3 exited with code 1"
+bm_0103,no structure (Boltz stage incomplete)
+bm_0551,"exit 1: 2026-08-16 17:44:55,563 - ERROR - Savant failed: HADDOCK3 exited with code 1"
+bm_0919,"exit 1: 2026-08-16 17:48:14,885 - ERROR - Savant failed: HADDOCK3 exited with code 1"
+bm_0104,no structure (Boltz stage incomplete)
+bm_0632,"exit 1: 2026-08-16 17:45:50,376 - ERROR - Savant failed: HADDOCK3 exited with code 1"
+bm_0105,no structure (Boltz stage incomplete)
+bm_0272,"exit 1: 2026-08-16 17:41:59,476 - ERROR - Savant failed: HADDOCK3 exited with code 1"
+bm_0633,"exit 1: 2026-08-16 17:46:42,803 - ERROR - Savant failed: HADDOCK3 exited with code 1"
+bm_0108,no structure (Boltz stage incomplete)
+bm_0193,"exit 1: 2026-08-16 17:42:01,515 - ERROR - Savant failed: HADDOCK3 exited with code 1"
+bm_0112,no structure (Boltz stage incomplete)
+bm_0097,"exit 1: 2026-08-16 17:40:32,146 - ERROR - Savant failed: HADDOCK3 exited with code 1"
+bm_0114,no structure (Boltz stage incomplete)
+bm_0115,no structure (Boltz stage incomplete)
+bm_0116,no structure (Boltz stage incomplete)
+bm_0117,no structure (Boltz stage incomplete)
+bm_0118,no structure (Boltz stage incomplete)
+bm_0119,no structure (Boltz stage incomplete)
+bm_0481,"exit 1: 2026-08-16 17:43:54,133 - ERROR - Savant failed: HADDOCK3 exited with code 1"
+bm_0975,no structure (Boltz stage incomplete)
+bm_0168,no structure (Boltz stage incomplete)
+bm_0281,"exit 1: 2026-08-16 17:41:44,017 - ERROR - Savant failed: HADDOCK3 exited with code 1"
+bm_0976,"exit 1: 2026-08-16 17:48:54,712 - ERROR - Savant failed: HADDOCK3 exited with code 1"
+bm_0172,no structure (Boltz stage incomplete)
+bm_0977,"exit 1: 2026-08-16 17:48:36,264 - ERROR - Savant failed: HADDOCK3 exited with code 1"
+bm_0177,no structure (Boltz stage incomplete)
+bm_0978,"exit 1: 2026-08-16 17:48:13,161 - ERROR - Savant failed: HADDOCK3 exited with code 1"
+bm_0178,no structure (Boltz stage incomplete)
+bm_0979,"exit 1: 2026-08-16 17:48:24,880 - ERROR - Savant failed: HADDOCK3 exited with code 1"
+bm_0298,no structure (Boltz stage incomplete)
+bm_0698,no structure (Boltz stage incomplete)
+bm_0699,no structure (Boltz stage incomplete)
+bm_0700,no structure (Boltz stage incomplete)
+bm_0856,"exit 1: 2026-08-16 17:46:49,842 - ERROR - Savant failed: HADDOCK3 exited with code 1"
+bm_0701,no structure (Boltz stage incomplete)
+bm_0702,no structure (Boltz stage incomplete)
+bm_0703,no structure (Boltz stage incomplete)
+bm_0793,no structure (Boltz stage incomplete)
+bm_0900,no structure (Boltz stage incomplete)
+bm_0780,"exit 1: 2026-08-16 17:46:51,039 - ERROR - Savant failed: HADDOCK3 exited with code 1"
+bm_0927,no structure (Boltz stage incomplete)
+bm_0991,no structure (Boltz stage incomplete)
+bm_0933,no structure (Boltz stage incomplete)
+bm_0968,no structure (Boltz stage incomplete)
+bm_0969,no structure (Boltz stage incomplete)
+bm_0970,no structure (Boltz stage incomplete)
+bm_0299,"exit 1: 2026-08-16 17:42:01,867 - ERROR - Savant failed: HADDOCK3 exited with code 1"
+bm_0971,no structure (Boltz stage incomplete)
+bm_0908,"exit 1: 2026-08-16 17:47:49,729 - ERROR - Savant failed: HADDOCK3 exited with code 1"
+bm_0980,no structure (Boltz stage incomplete)
+bm_0083,"exit 1: 2026-08-16 17:40:20,103 - ERROR - Savant failed: HADDOCK3 exited with code 1"
+bm_0909,"exit 1: 2026-08-16 17:48:05,105 - ERROR - Savant failed: HADDOCK3 exited with code 1"
+bm_0985,no structure (Boltz stage incomplete)

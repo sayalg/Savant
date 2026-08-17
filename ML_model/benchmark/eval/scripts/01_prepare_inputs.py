@@ -29,6 +29,7 @@ directory to each task; `boltz predict` loads the model once per directory.
 from __future__ import annotations
 
 import argparse
+import math
 import os
 
 import pandas as pd
@@ -36,8 +37,8 @@ from rdkit import Chem, RDLogger
 from rdkit.Chem.MolStandardize import rdMolStandardize
 
 from common import (BENCHMARK_CSV, LIGAND_CHAIN, MANIFEST, MAX_AFFINITY_HEAVY_ATOMS,
-                    MSA_DIR, PROTEIN_CHAIN, TARGETS_CSV, WORK, YAML_DIR, ensure_dirs,
-                    log, shard_name, yaml_quote)
+                    MSA_DIR, PROTEIN_CHAIN, SHARDS_CSV, TARGETS_CSV, WORK, YAML_DIR,
+                    ensure_dirs, log, shard_name, yaml_quote)
 
 RDLogger.DisableLog("rdApp.*")
 
@@ -120,21 +121,43 @@ def main() -> None:
     msa_dir = (os.path.abspath(args.msa_dir).replace(os.sep, "/")
                if args.msa_mode == "precomputed" else None)
 
-    rows, n_desalted, n_no_affinity, n_unparsed = [], 0, 0, 0
-    for i, r in enumerate(df.itertuples(index=False)):
-        shard = i % args.num_shards
-        shard_dir = os.path.join(YAML_DIR, shard_name(shard))
-        os.makedirs(shard_dir, exist_ok=True)
-
+    # Pass 1: resolve the ligand chemistry, so records can be grouped by whether
+    # they get an affinity request before any shard is assigned.
+    prepared, n_desalted, n_unparsed = [], 0, 0
+    for r in df.itertuples(index=False):
         docked_smiles, stripped, n_heavy = desalt(r.ligand_smiles)
         n_desalted += stripped
         n_unparsed += n_heavy < 0
-
         # Boltz-2's affinity head is undefined past 128 heavy atoms; those pairs
         # still get a structure (which is what Savant and PRODIGY need), just no
         # affinity_*.json.
         affinity = 0 <= n_heavy <= MAX_AFFINITY_HEAVY_ATOMS
-        n_no_affinity += not affinity
+        prepared.append((r, docked_smiles, stripped, n_heavy, affinity))
+
+    # Shards must be HOMOGENEOUS in affinity, or Boltz dies partway through.
+    # It enters the affinity stage when ANY record in the input directory asks
+    # for affinity, but that stage then iterates EVERY record in the directory
+    # and loads a pre_affinity_<id>.npz that only affinity records are given:
+    #   FileNotFoundError: .../predictions/bm_0101/pre_affinity_bm_0101.npz
+    # One oversized ligand therefore takes down its whole shard. Keeping the two
+    # populations apart means the affinity stage either runs over records that
+    # all have the file, or is never entered at all.
+    with_affinity = [p for p in prepared if p[4]]
+    without_affinity = [p for p in prepared if not p[4]]
+
+    per_shard = math.ceil(len(with_affinity) / args.num_shards) if with_affinity else 0
+    n_extra = math.ceil(len(without_affinity) / per_shard) if (without_affinity and per_shard) \
+        else (1 if without_affinity else 0)
+    n_shards_total = args.num_shards + n_extra
+
+    assignment = [(p, i % args.num_shards) for i, p in enumerate(with_affinity)]
+    assignment += [(p, args.num_shards + (i % n_extra))
+                   for i, p in enumerate(without_affinity)]
+
+    rows = []
+    for (r, docked_smiles, stripped, n_heavy, affinity), shard in assignment:
+        shard_dir = os.path.join(YAML_DIR, shard_name(shard))
+        os.makedirs(shard_dir, exist_ok=True)
 
         # Forward slashes: the YAML may be written on one OS and consumed on the
         # cluster, and a backslash inside a single-quoted scalar is a literal.
@@ -160,16 +183,30 @@ def main() -> None:
     manifest = pd.DataFrame(rows)
     manifest.to_csv(MANIFEST, index=False)
 
-    log(f"wrote {len(manifest)} YAMLs into {args.num_shards} shards under {YAML_DIR}")
+    shards = (manifest.groupby("shard")
+                      .agg(n_pairs=("benchmark_id", "size"),
+                           affinity=("affinity_requested", "all"),
+                           mixed=("affinity_requested", "nunique"))
+                      .reset_index())
+    shards["mixed"] = shards.mixed > 1
+    shards.to_csv(SHARDS_CSV, index=False)
+    if shards.mixed.any():  # never expected; the split above prevents it
+        raise SystemExit(f"BUG: shards {shards.loc[shards.mixed, 'shard'].tolist()} "
+                         "mix affinity and non-affinity records")
+
+    log(f"wrote {len(manifest)} YAMLs under {YAML_DIR}")
     log(f"  desalted ligands            : {n_desalted}")
-    log(f"  no affinity head (>{MAX_AFFINITY_HEAVY_ATOMS} heavy): {n_no_affinity}")
+    log(f"  no affinity head (>{MAX_AFFINITY_HEAVY_ATOMS} heavy): {len(without_affinity)}")
     if n_unparsed:
         log(f"  WARNING: {n_unparsed} SMILES RDKit could not parse (passed through verbatim)")
-    log(f"wrote {MANIFEST}")
+    log(f"  shards: {args.num_shards} with affinity ({len(with_affinity)} pairs) "
+        f"+ {n_extra} without ({len(without_affinity)} pairs) = {n_shards_total}")
+    log(f"wrote {MANIFEST} and {SHARDS_CSV}")
     if msa_dir:
         log(f"YAMLs reference MSAs at {msa_dir}/<uniprot>.a3m - run 02_fetch_msas.py next")
     else:
         log("YAMLs carry no msa field - boltz must be run with --use_msa_server")
+    log(f"then: sbatch --array=0-{n_shards_total - 1} sbatch/run_boltz.sbatch")
 
 
 if __name__ == "__main__":
