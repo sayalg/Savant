@@ -160,8 +160,13 @@ def main() -> None:
     long.to_csv(long_path, index=False)
     log(f"wrote {long_path} ({len(long)} rows = {len(df)} pairs x {len(frames)} tools)")
 
+    # uniprot_id/gene give per-target rows. Most targets carry 1-3 pairs, so
+    # metrics() returns NaN for them (n < 5) and only the 58 targets with enough
+    # ligands report a value - which is the population that can answer "does the
+    # tool rank analogs against a single target correctly", the lead-optimisation
+    # question. Filter on n in Tableau.
     groupings = ["novelty_tier", "protein_class", "chembl_l1", "cf_superclass",
-                 "pkd_bin", "pose_quality"]
+                 "pkd_bin", "pose_quality", "uniprot_id", "gene"]
     rows = []
     for tool, (column, _, _kd) in TOOLS.items():
         if column not in df.columns:
