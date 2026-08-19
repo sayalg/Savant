@@ -1,0 +1,585 @@
+---
+title: "Predicting how tightly a drug binds its target"
+subtitle: "Benchmarking Savant against PRODIGY-LIG and Boltz-2"
+author: "Sayal Guirales-Medrano"
+date: today
+format:
+  html:
+    toc: true
+    toc-depth: 2
+    number-sections: true
+    code-fold: true
+    code-summary: "Show the code"
+    embed-resources: true
+    theme: cosmo
+    fig-width: 9
+    fig-height: 7
+execute:
+  echo: false
+  warning: false
+  message: false
+---
+
+```{python}
+#| label: setup
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+from matplotlib.ticker import LogLocator
+
+DATA = "../savant_v2/output/benchmark_v2_scored.csv"
+LABEL = "neg_log10_affinity_M"
+
+d = pd.read_csv(DATA)
+
+# Every tool reports affinity on a log scale (pKd). Convert to Kd in nanomolar,
+# the unit an experimentalist actually measures, so all four are comparable.
+def to_kd_nM(pkd):
+    return 10.0 ** (9.0 - pkd)
+
+TOOLS = {
+    "Boltz-2":     ("boltz_affinity_pic50", "#0072B2"),
+    "PRODIGY-LIG": ("prodigy_pkd",          "#009E73"),
+    "Savant v1":   ("savant_pk",            "#D55E00"),
+    "Savant v2":   ("savant2_pk",           "#CC79A7"),
+}
+
+cols = [c for c, _ in TOOLS.values()]
+# The fair comparison set: pairs every tool managed to score.
+common = d[d[cols].notna().all(axis=1) & d[LABEL].notna()].copy()
+
+# PRODIGY-LIG has a second mode that uses an extra electrostatics term. It is
+# left out of the figures to keep them to four panels, but included in the full
+# metrics table so no tool is missing from the comparison.
+ALL_TOOLS = dict(TOOLS)
+ALL_TOOLS["PRODIGY-LIG (+elec)"] = ("prodigy_pkd_elec", "#56B4E9")
+all_cols = [c for c, _ in ALL_TOOLS.values()]
+common_all = d[d[all_cols].notna().all(axis=1) & d[LABEL].notna()].copy()
+
+def full_metrics(frame, col):
+    """The five standard regression metrics, all on the log (pKd) scale."""
+    m = frame[LABEL].notna() & frame[col].notna()
+    truth = frame[LABEL][m].to_numpy()
+    pred = frame[col][m].to_numpy()
+    err = truth - pred
+    # Guard the division so a true value of exactly zero cannot make MAPE blow up.
+    denom = np.where(np.abs(truth) < 1e-9, np.nan, np.abs(truth))
+    return {
+        "Pairs": int(m.sum()),
+        "RMSE": float(np.sqrt((err ** 2).mean())),
+        "MAE": float(np.abs(err).mean()),
+        "MAPE (%)": float(np.nanmean(np.abs(err) / denom) * 100),
+        "Pearson r": float(np.corrcoef(truth, pred)[0, 1]),
+        "Spearman rho": float(pd.Series(truth).corr(pd.Series(pred), method="spearman")),
+    }
+
+def metrics_table(frame, tools=None):
+    tools = tools or ALL_TOOLS
+    rows = [{"Tool": name, **full_metrics(frame, col)}
+            for name, (col, _) in tools.items()]
+    return (pd.DataFrame(rows)
+            .sort_values("Pearson r", ascending=False)
+            .style.format({"RMSE": "{:.2f}", "MAE": "{:.2f}", "MAPE (%)": "{:.1f}",
+                           "Pearson r": "{:.3f}", "Spearman rho": "{:.3f}"})
+            .hide(axis="index"))
+
+def scores(frame, col):
+    m = frame[LABEL].notna() & frame[col].notna()
+    truth, pred = frame[LABEL][m], frame[col][m]
+    err = (truth - pred).abs()
+    return {
+        "Pairs scored": int(m.sum()),
+        "Typical error (fold)": 10 ** err.median(),
+        "Within 10-fold (%)": 100 * (err <= 1).mean(),
+        "Within 100-fold (%)": 100 * (err <= 2).mean(),
+        "Correlation": truth.corr(pred),
+    }
+```
+
+## The short version {.unnumbered}
+
+We tested three tools, and then a fourth we built, on the same 1,000
+protein–drug pairs where the true binding strength is known from experiments.
+
+- **Savant v1**, our original tool, performed about the same as **PRODIGY-LIG**,
+  a much simpler and much faster method. That was disappointing: v1 needed hours
+  of computation per pair to match something that takes seconds.
+- We found out why, rebuilt the tool as **Savant v2**, and it now clearly beats
+  both v1 and PRODIGY-LIG — while running about a hundred times faster than v1.
+- **Boltz-2**, a large AI model that needs a graphics card, is still the most
+  accurate. Savant v2 closes part of the gap and runs on an ordinary laptop.
+
+## What we are trying to predict
+
+When a drug binds a protein, we describe the strength of that binding with a
+number called **Kd**, measured in nanomolar (nM).
+
+**Kd is the drug concentration at which half of the protein is occupied.** So a
+*lower* Kd means a *stronger* drug — less of it is needed to do the job.
+
+- Kd of 1 nM → very strong binding, typical of a good drug
+- Kd of 1,000 nM → moderate
+- Kd of 1,000,000 nM → very weak, essentially useless
+
+Kd values cover an enormous range. In our test set the real values run from
+0.002 nM to 6,810,000 nM — a factor of over a billion. That is why every chart
+here uses a **logarithmic scale**, where each step is a ten-fold change rather
+than a fixed amount.
+
+It also changes how we measure error. Being "500 nM off" means nothing on its
+own: it is a catastrophic miss for a 1 nM drug and a rounding error for a
+1,000,000 nM one. So we ask instead: **how many times off was the prediction?**
+A prediction of 100 nM when the truth is 10 nM is "10-fold off". Getting within
+10-fold is the practical standard for a useful prediction.
+
+## The test set
+
+```{python}
+#| label: dataset
+n_pairs = len(d)
+n_targets = d.uniprot_id.nunique()
+truth_kd = to_kd_nM(d[LABEL])
+print(f"{n_pairs} protein-drug pairs across {n_targets} different proteins")
+print(f"True Kd ranges from {truth_kd.min():,.3g} nM to {truth_kd.max():,.3g} nM")
+print(f"Median true Kd: {truth_kd.median():,.0f} nM")
+```
+
+Two rules make this a genuinely hard test rather than a flattering one:
+
+1. **No drug in the test set closely resembles anything Savant was trained on.**
+   Chemically similar molecules were removed, so the tool cannot succeed by
+   recognising something it has seen before.
+2. **The proteins are labelled by how familiar they are** — some appear in
+   training, some are relatives, and some are from protein families the tool has
+   never encountered.
+
+Every tool was given the same 3D structures of each protein–drug pair, predicted
+by Boltz-2, so no tool has an advantage from a better starting structure.
+
+# Round one: how Savant v1 did
+
+## The picture
+
+Each dot below is one protein–drug pair. The horizontal position is the **true**
+Kd from the experiment; the vertical position is what the tool **predicted**.
+
+The diagonal line is a perfect prediction. Dots on the line are exactly right.
+Dots above the line mean the tool predicted weaker binding than reality; below
+the line means it predicted stronger. The shaded band shows the region within
+10-fold of the truth.
+
+**What to look for:** a tool that is working shows dots forming a diagonal
+stripe. A tool that is not shows a flat horizontal cloud — it is guessing about
+the same answer regardless of the drug.
+
+```{python}
+#| label: fig-scatter
+#| fig-cap: "Predicted versus true binding strength for all four tools. Both axes are Kd in nanomolar on a log scale, so each gridline is a ten-fold change. Strong binders sit toward the lower left of each panel."
+
+fig, axes = plt.subplots(2, 2, figsize=(9.5, 9), sharex=True, sharey=True)
+
+lims = (1e-3, 1e8)
+for ax, (name, (col, colour)) in zip(axes.ravel(), TOOLS.items()):
+    m = common[LABEL].notna() & common[col].notna()
+    x = to_kd_nM(common[LABEL][m])
+    y = to_kd_nM(common[col][m])
+
+    # 10-fold band around perfect agreement
+    grid = np.array(lims)
+    ax.fill_between(grid, grid / 10, grid * 10, color="grey", alpha=0.15, lw=0)
+    ax.plot(grid, grid, color="black", lw=1, ls="--", zorder=3)
+
+    ax.scatter(x, y, s=14, alpha=0.35, color=colour, edgecolors="none")
+
+    # ASCII only in figure text: matplotlib's default font and the reader's
+    # locale do not always agree about en-dashes and middle dots.
+    s = scores(common, col)
+    ax.set_title(f"{name}\n{s['Within 10-fold (%)']:.0f}% within 10-fold  |  "
+                 f"typical miss {s['Typical error (fold)']:.0f}x",
+                 fontsize=11, loc="left")
+    ax.set_xscale("log"); ax.set_yscale("log")
+    ax.set_xlim(lims); ax.set_ylim(lims)
+    ax.grid(alpha=0.2, which="major")
+
+for ax in axes[1]:
+    ax.set_xlabel("True Kd (nM)   <- stronger binding")
+for ax in axes[:, 0]:
+    ax.set_ylabel("Predicted Kd (nM)")
+
+fig.suptitle("Each dot is one protein-drug pair. Dashed line = a perfect prediction; "
+             "grey band = within 10-fold.", fontsize=11, y=0.98)
+fig.tight_layout()
+plt.show()
+```
+
+The difference is visible without any statistics. Boltz-2's cloud tilts along
+the diagonal. Savant v1's and PRODIGY-LIG's clouds are much flatter — they
+spread up and down almost regardless of the true value, which is what a weak
+predictor looks like.
+
+## The numbers
+
+```{python}
+#| label: tbl-round1
+rows = []
+for name in ["Boltz-2", "PRODIGY-LIG", "Savant v1"]:
+    col = TOOLS[name][0]
+    rows.append({"Tool": name, **scores(common, col)})
+table = pd.DataFrame(rows)
+table.style.format({
+    "Typical error (fold)": "{:.0f}x",
+    "Within 10-fold (%)": "{:.0f}%",
+    "Within 100-fold (%)": "{:.0f}%",
+    "Correlation": "{:.2f}",
+}).hide(axis="index")
+```
+
+Reading the table:
+
+- **Typical error (fold)** — the middle prediction was off by this many times.
+  Smaller is better.
+- **Within 10-fold** — the share of predictions close enough to be useful.
+  Bigger is better.
+- **Correlation** — whether the tool ranks drugs correctly, from 0 (no
+  relationship) to 1 (perfect). This matters most in practice, because the usual
+  question is "which of these drugs is best?", not "what is the exact number?"
+
+## What this told us
+
+**Savant v1 was no better than PRODIGY-LIG.** Its correlation of 0.16 sits
+essentially level with PRODIGY-LIG's 0.17, and a statistical test comparing them
+on identical pairs found no reliable difference between the two.
+
+That is a problem, because the two tools are not remotely comparable in cost:
+
+| | Savant v1 | PRODIGY-LIG |
+|---|---|---|
+| What it needs | AlphaFold3 structure + HADDOCK energy simulation | just the structure |
+| Time per pair | minutes to hours | about a second |
+| Hardware | computing cluster | any laptop |
+| Result | correlation 0.16 | correlation 0.17 |
+
+Savant v1 also **refused to answer for 353 of the 1,000 pairs**. It has a first
+step that decides whether a drug binds at all, and only predicts a strength for
+those that pass. That filter rejected a third of the pairs — every one of which
+was a real, experimentally confirmed binder.
+
+So v1 was doing far more work than PRODIGY-LIG, answering fewer questions, and
+arriving at the same accuracy.
+
+# What we changed, and why
+
+## Finding out where the effort was going
+
+Savant v1 described each protein–drug pair with 18 numbers. Eleven described the
+drug alone. The other seven came from HADDOCK, a physics simulation that
+estimates the energy of the interaction — and that was the slow, expensive part
+of the whole pipeline.
+
+We tested how much each group of numbers actually contributed by retraining the
+model with different combinations:
+
+| What the model was given | Correlation |
+|---|---|
+| The drug only — no protein, no structure at all | 0.25 |
+| Drug + a simple count of how many contacts it makes | 0.26 |
+| Drug + all seven HADDOCK energy numbers | 0.27 |
+
+**The seven HADDOCK numbers were worth 0.01.** A simple count of atomic
+contacts, which takes milliseconds, did nearly the same job as hours of physics
+simulation.
+
+Worse, a model given *only* the drug's chemical properties — never seeing the
+protein or the 3D structure — scored 0.25. Almost everything v1 achieved could
+be achieved without looking at the protein at all.
+
+The reason became clear when we examined the training data: **it contained no
+information identifying the protein.** Just the drug's properties and those
+seven energy numbers. Two completely different proteins with similar contact
+energies looked identical to the model. It never had a chance to learn which
+protein it was dealing with.
+
+## The two changes we made
+
+**1. We removed HADDOCK and described the interaction directly instead.**
+
+Rather than compressing a whole interface into seven energy values, Savant v2
+counts what is physically there:
+
+- hydrophobic contacts (greasy parts touching greasy parts)
+- hydrogen bonds
+- salt bridges (opposite charges attracting)
+- ring stacking, split by whether the rings are face-to-face or edge-on
+- halogen bonds and metal contacts
+- how much of the drug's surface is buried inside the pocket
+- which **kinds of amino acid** line the pocket — this is how the protein
+  finally enters the picture
+
+This is roughly 650 numbers instead of 18, all computed from geometry in about
+one second on a single processor core. No physics simulation, no cluster.
+
+**2. We retrained both models properly.**
+
+Savant keeps the same two-step design as v1 — one model decides *does this bind
+at all?*, a second predicts *how strongly?* — but both were rebuilt:
+
+- **The first model was letting too much through the wrong way.** It had been
+  trained on data that was 94% binders, then used a 50/50 decision rule, so it
+  rejected a third of genuine binders. We now tune the cut-off on held-out data
+  to keep 95% of real binders, and anything it screens out is still reported
+  rather than silently dropped.
+- **The second model now reports its own uncertainty.** Instead of a bare
+  number, it gives a range — "Kd is about 70 nM, likely between 20 and 250" —
+  so a user can tell a confident prediction from a shaky one.
+
+We also switched the underlying algorithm from XGBoost to scikit-learn's
+gradient boosting. We checked this made no difference to accuracy (correlation
+0.446 versus 0.453 on the same data); it simply removes a dependency.
+
+# Round two: how Savant v2 did
+
+```{python}
+#| label: tbl-round2
+rows = []
+for name in ["Boltz-2", "Savant v2", "Savant v1", "PRODIGY-LIG"]:
+    col = TOOLS[name][0]
+    rows.append({"Tool": name, **scores(common, col)})
+table2 = pd.DataFrame(rows)
+table2.style.format({
+    "Typical error (fold)": "{:.0f}x",
+    "Within 10-fold (%)": "{:.0f}%",
+    "Within 100-fold (%)": "{:.0f}%",
+    "Correlation": "{:.2f}",
+}).hide(axis="index")
+```
+
+```{python}
+#| label: fig-bars
+#| fig-cap: "How often each tool lands within 10-fold of the true binding strength, and how far off the typical prediction is."
+
+fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(9.5, 4))
+order = ["PRODIGY-LIG", "Savant v1", "Savant v2", "Boltz-2"]
+vals10 = [scores(common, TOOLS[t][0])["Within 10-fold (%)"] for t in order]
+fold = [scores(common, TOOLS[t][0])["Typical error (fold)"] for t in order]
+colours = [TOOLS[t][1] for t in order]
+
+b1 = ax1.bar(order, vals10, color=colours)
+ax1.set_ylabel("Predictions within 10-fold (%)")
+ax1.set_title("Higher is better", fontsize=10, loc="left")
+ax1.bar_label(b1, fmt="%.0f%%", padding=2)
+ax1.set_ylim(0, 65)
+
+b2 = ax2.bar(order, fold, color=colours)
+ax2.set_ylabel("Typical error (fold)")
+ax2.set_title("Lower is better", fontsize=10, loc="left")
+ax2.bar_label(b2, fmt="%.0fx", padding=2)
+ax2.set_ylim(0, 22)
+
+for ax in (ax1, ax2):
+    ax.grid(axis="y", alpha=0.2)
+    ax.set_axisbelow(True)
+    ax.tick_params(axis="x", rotation=15)
+fig.tight_layout()
+plt.show()
+```
+
+## What improved
+
+**Against Savant v1**, on exactly the same pairs:
+
+- correlation more than doubled, 0.16 → 0.37
+- the typical prediction went from 15-fold off to 11-fold off
+- it now answers for **960 pairs instead of 647**
+
+**Against PRODIGY-LIG**, v2 is clearly ahead rather than tied — correlation 0.37
+against 0.17, and 48% of predictions within 10-fold against 41%.
+
+And it does this while being *faster* than v1, not slower: about one second per
+pair on a laptop, versus minutes on a cluster.
+
+**Against Boltz-2**, Savant v2 is still behind on correlation (0.37 versus 0.45).
+Boltz-2 remains the most accurate tool we tested. It also needs a graphics card,
+takes minutes per pair, and gives a single number with no explanation.
+
+## What Savant v2 gives that the others do not
+
+For each prediction, it reports the interactions it found — how many hydrogen
+bonds, which amino acids the drug touches, how deeply buried it is. For example,
+on a real fatty-acid binding protein:
+
+```
+prediction   BINDER  (probability 1.00)
+affinity     Kd 71 nM
+interface    18 residues, 851 A^2 buried, ligand 99% enclosed
+interactions
+  hydrophobic contacts            134
+  hydrogen bonds                    4
+  salt bridges                      6
+contacting residues  TYR x4, ILE x3, VAL x3, PHE x1, LYS x1
+```
+
+That description matches the known chemistry — a greasy molecule packed into a
+greasy pocket with its acid end anchored by charged contacts. Neither Boltz-2
+nor PRODIGY-LIG produces anything like it.
+
+# Full performance metrics
+
+The tables above used fold-error because it is the easiest number to picture.
+This section gives the five standard metrics as well, so these results can be
+compared against published work.
+
+## How to read them
+
+All five are calculated on the **log scale** (pKd), not on Kd directly. That is
+deliberate. On the Kd scale, a handful of very weak binders with true values in
+the millions of nM would dominate every average and drown out what the tool does
+on everything else. On the log scale each whole unit is a ten-fold change, which
+keeps every pair contributing equally.
+
+The useful translation:
+
+| Metric | What it measures | Rough meaning | Better |
+|---|---|---|---|
+| **RMSE** | typical error, punishing big misses extra | 1.0 ≈ 10-fold out | lower |
+| **MAE** | typical error, treating all misses equally | 1.0 ≈ 10-fold out | lower |
+| **MAPE** | average error as a % of the true value | 20% ≈ a fifth off | lower |
+| **Pearson r** | does the prediction rise and fall with the truth? | 0 = none, 1 = perfect | higher |
+| **Spearman ρ** | does it put the drugs in the right order? | 0 = none, 1 = perfect | higher |
+
+RMSE and MAE answer *how far off*. Pearson and Spearman answer *does it rank
+correctly* — usually the more important question, since the practical use is
+choosing the best drug from a list rather than predicting an exact number.
+
+Comparing RMSE and MAE is informative in itself: RMSE is always the larger of
+the two, and the bigger the gap between them, the more a tool's error is driven
+by a few very large misses rather than by being consistently a little off.
+
+## The comparison set
+
+```{python}
+#| label: tbl-full-metrics
+#| tbl-cap: "All five metrics on the 647 pairs that every tool scored. Sorted by Pearson correlation."
+metrics_table(common_all)
+```
+
+This uses only the pairs **all five tools managed to score**, so no tool is
+helped or hurt by having answered an easier or harder subset. Savant v1 is what
+limits this to 647 of the 1,000 pairs.
+
+Two things stand out.
+
+**Savant v2 has the lowest RMSE of any tool, including Boltz-2** (1.50 versus
+1.55), while Boltz-2 leads clearly on both correlations. So v2's individual
+predictions are, on average, marginally closer to the truth — but Boltz-2 is
+better at telling strong binders from weak ones.
+
+**Savant v1 ranks third on error but last on correlation.** Its RMSE (1.77) beats
+both PRODIGY-LIG variants, yet its Pearson r (0.156) is the worst in the table.
+That looks contradictory, and the reason is a trap worth knowing about:
+
+> A model can score well on RMSE by predicting close to the dataset average every
+> time. Most true values sit near the middle, so playing it safe is rarely badly
+> wrong — even if the prediction barely changes from one drug to the next.
+
+You can see exactly how much each tool plays it safe by comparing how spread out
+its predictions are against how spread out the real values are:
+
+```{python}
+#| label: tbl-spread
+spread = [{"Tool": "The true values", "Spread of values": common_all[LABEL].std(),
+           "As % of the truth": 100.0}]
+for name, (col, _) in ALL_TOOLS.items():
+    sd = common_all[col].std()
+    spread.append({"Tool": name, "Spread of values": sd,
+                   "As % of the truth": 100 * sd / common_all[LABEL].std()})
+(pd.DataFrame(spread)
+ .style.format({"Spread of values": "{:.2f}", "As % of the truth": "{:.0f}%"})
+ .hide(axis="index"))
+```
+
+Every tool hedges — none of them spread their answers as widely as reality does.
+Savant v1 covers 64% of the true spread against PRODIGY-LIG's 78%, so v1 is the
+more cautious of the two, and that caution is what buys it the better RMSE.
+
+But notice that **Savant v2 hedges the most of all** (43%) and still has both the
+best RMSE *and* the second-best correlation. So playing it safe is not by itself
+what ruins a tool. Being cautious lowers your error; whether your answers still
+line up in the right order is a separate question, and that is what correlation
+measures.
+
+**This is why correlation is the metric to trust here.** RMSE cannot tell apart a
+tool that is genuinely tracking the truth from one that is quietly guessing the
+average — and Savant v1 versus PRODIGY-LIG is exactly that situation. If you are
+choosing which compound to test next, ranking is the whole job.
+
+## Each tool on everything it scored
+
+```{python}
+#| label: tbl-full-coverage
+#| tbl-cap: "Each tool measured on every pair it produced an answer for. Coverage differs, so these rows are not strictly like-for-like."
+metrics_table(d)
+```
+
+This second table is the more realistic view of day-to-day use, because it
+includes every answer each tool actually gave. But the row counts differ, so it
+should not be used for a head-to-head claim — Savant v1's 647 pairs are the
+subset its own filter accepted, which is not a random sample of the benchmark.
+
+Both views agree on the conclusion: Boltz-2 first, Savant v2 second, then a
+clear gap to PRODIGY-LIG and Savant v1.
+
+# Honest limitations
+
+**Boltz-2 is still more accurate.** We narrowed the gap; we did not close it.
+
+**Savant v2 is much better on familiar proteins than unfamiliar ones.**
+
+```{python}
+#| label: tbl-tiers
+s = d[d.savant2_pk.notna() & d[LABEL].notna()]
+rows = []
+labels = {"same_protein": "Protein seen in training",
+          "same_family": "Related protein seen",
+          "novel_family": "Protein family never seen"}
+for tier, g in s.groupby("novelty_tier"):
+    row = {"How familiar is the protein?": labels.get(tier, tier), "Pairs": len(g)}
+    for name in ["Boltz-2", "Savant v2", "PRODIGY-LIG"]:
+        col = TOOLS[name][0]
+        m = g[LABEL].notna() & g[col].notna()
+        row[name] = g[LABEL][m].corr(g[col][m])
+    rows.append(row)
+order = ["Protein seen in training", "Related protein seen", "Protein family never seen"]
+tiers = pd.DataFrame(rows).set_index("How familiar is the protein?").loc[order].reset_index()
+tiers.style.format({"Boltz-2": "{:.2f}", "Savant v2": "{:.2f}",
+                    "PRODIGY-LIG": "{:.2f}"}).hide(axis="index")
+```
+
+On proteins it has seen, Savant v2 (0.45) approaches Boltz-2 (0.56). On protein
+families it has never encountered, it drops to 0.11 — below PRODIGY-LIG's 0.20.
+PRODIGY-LIG is built on physics, which works the same everywhere; Savant learns
+patterns from data, and unfamiliar biology is where learned patterns fail.
+
+**The uncertainty ranges are too narrow on unfamiliar proteins.** They are built
+to be right 90% of the time, and on this test set they were right 64% of the
+time. The ranges are honest on data resembling the training set and
+overconfident beyond it.
+
+**40 of the 1,000 pairs are missing** because the structure-prediction step never
+produced a structure for them, mostly very large drug molecules. That is a gap
+in the input, not in the scoring.
+
+# What this means
+
+Savant v1 did a large amount of expensive work to match a tool that runs in a
+second. Finding that out required building the benchmark and testing honestly.
+
+Savant v2 turned that into a real improvement by spending the effort in a
+different place — describing what the drug and protein are actually doing to
+each other, rather than compressing it into a handful of energy numbers — and by
+letting the model see which protein it is looking at.
+
+The result is a tool that runs on a laptop in about a second, clearly beats the
+fast alternative, reports how confident it is, and explains its reasoning. It is
+not the most accurate option available; Boltz-2 is. It is the most accurate
+option that a biologist can run on their own computer, on a structure they
+already have.

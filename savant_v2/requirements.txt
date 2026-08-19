@@ -1,0 +1,38 @@
+# Savant v2 dependencies, for pip. Prefer environment.yml if you use conda:
+# RDKit and PyTorch are both easier to get right from conda-forge.
+#
+#   pip install -r requirements.txt
+#
+# Lower bounds only. These are the versions the code is written against, not a
+# lockfile - pin exactly with `pip freeze` once your environment works.
+
+# --- core: feature extraction, both gradient-boosted models, the CLI --------
+numpy>=1.24
+scipy>=1.10             # cKDTree drives every interaction feature
+pandas>=2.0
+pyarrow>=14             # parquet feature shards; extraction fails without it
+rdkit>=2023.09.1        # ligand typing, descriptors, ECFP4
+scikit-learn>=1.3       # HistGradientBoosting classifier + regressor
+joblib>=1.3             # .pkl model serialisation
+
+# --- cross-attention model only (scripts 04-05) ----------------------------
+# Everything above runs without these. Install the PyTorch build that matches
+# your driver's CUDA version, NOT whatever PyPI defaults to:
+#   pip install torch --index-url https://download.pytorch.org/whl/cu128
+torch>=2.2
+transformers>=4.40      # ESM-2 protein language model
+
+# Not required, and deliberately so:
+#   haddock3   removed in v2 - its energy terms were worth +0.012 Pearson r
+#   biopython  not used - burial.py has its own Shrake-Rupley
+#   click      the CLI uses argparse from the standard library
+#   xgboost    v1's regressor (mango_sponge) was XGBoost; v2 uses sklearn's
+#              HistGradientBoosting instead. Measured on an identical
+#              protein-grouped split over the same 18 features:
+#                  HistGradientBoosting  rmse 1.293  mae 1.054  r +0.446
+#                  xgboost               rmse 1.290  mae 1.050  r +0.453
+#              Indistinguishable, and sklearn is already required for the
+#              classifier and the splits, so this is one library instead of two.
+#              Install xgboost only if you need to LOAD a v1 .pkl - which also
+#              needs scikit-learn~=1.6.1, conflicting with the unpinned sklearn
+#              here, so use a separate v1 environment for that.
