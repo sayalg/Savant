@@ -1,36 +1,51 @@
 [tool.poetry]
 name = "savant"
-version = "0.1.0"
-description = "Score an already-docked protein-ligand complex with RDKit + HADDOCK3 and emit a single feature table."
+version = "1.0.0"
+description = "Structure-free protein-ligand binding affinity prediction from sequence and SMILES."
 authors = ["Sayal Guirales-Medrano"]
 readme = "README.md"
+# `savant` is a real package and installs a `savant` command.
+# `savant_structure_based/` stays a single script run with `python <path>`: it is
+# the paper's structure-based arm, not something to install alongside the model
+# of record.
 packages = [{ include = "savant" }]
-
-# Floor is 3.12 because xgboost >=3.3.0 requires Python >=3.12; ceiling is
-# <3.15 because haddock3 (a hard runtime dependency) supports up to 3.14.
-[tool.poetry.dependencies]
-python = ">=3.12,<3.15"
-click = "^8.1"
-biopython = "^1.83"
-pandas = "^2.0"
-rdkit = ">=2023.3"
-# Model inference: tender_comb (scikit-learn) + mango_sponge (xgboost),
-# loaded from disk with joblib. scikit-learn is pinned to the version the
-# models were pickled with (1.6.1) to avoid InconsistentVersionWarning and
-# any silent drift when unpickling the RandomForest. xgboost >=3.3.0 loads and
-# scores the mango_sponge model correctly (verified with 3.4.0).
-scikit-learn = "~1.6.1"
-xgboost = ">=3.3.0"
-joblib = ">=1.3"
-
-# HADDOCK3 is a hard dependency of Savant but is LINUX-ONLY. The platform
-# marker means `poetry install` installs it on Linux (e.g. your HPC) and skips
-# it on Windows/macOS dev machines, where it cannot build or run. Savant shells
-# out to the `haddock3` executable it provides.
-haddock3 = { version = ">=2026.3.0", markers = "sys_platform == 'linux'" }
 
 [tool.poetry.scripts]
 savant = "savant.cli:main"
+
+# Floor is 3.12 because xgboost >=3.3.0 requires Python >=3.12; ceiling is
+# <3.15 because haddock3 supports up to 3.14.
+[tool.poetry.dependencies]
+python = ">=3.12,<3.15"
+pandas = "^2.0"
+numpy = ">=1.26"
+rdkit = ">=2023.3"
+joblib = ">=1.3"
+# Both boosters travel as save_model() JSON inside a joblib bundle, carrying
+# their own column list and fitted intercept, so they load across XGBoost
+# versions and there is no scikit-learn version to pin for them.
+xgboost = ">=3.3.0"
+# The protein and ligand encoders: ESM2-650M / ESM2-8M and ChemBERTa-77M-MLM,
+# mean-pooled over the last hidden state. CPU is sufficient.
+torch = ">=2.2"
+transformers = ">=4.40"
+# savant_structure_based's structure-free / structure-based models are
+# scikit-learn-wrapped pickles, so they do need the version they were pickled
+# with. The savant package does not load them.
+scikit-learn = "~1.6.1"
+# Steiger's paired test for the two-correlation comparison.
+scipy = ">=1.11"
+
+# HADDOCK3 is needed only by `savant_structure_based.py --model structure-based`,
+# and is LINUX-ONLY. The platform marker means `poetry install` installs it on
+# Linux (e.g. the HPC) and skips it on Windows/macOS, where it cannot build or
+# run. That script shells out to the `haddock3` executable it provides.
+haddock3 = { version = ">=2026.3.0", markers = "sys_platform == 'linux'" }
+
+# Reproducing the figures and the benchmark analysis.
+[tool.poetry.group.report.dependencies]
+matplotlib = ">=3.8"
+jupyter = ">=1.0"
 
 [build-system]
 requires = ["poetry-core>=1.5.0"]

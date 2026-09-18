@@ -40,8 +40,9 @@ pymod numpy  "needed by step 06"
 
 echo
 echo "== inputs =="
-file "../output/savant_benchmark_1000.csv"
-file "../../train"                      # savant .pkl models live here
+file "${BENCHMARK_CSV:-../output/savant_benchmark.csv}"
+file "../../models_structure_free"      # structure-based .pkl models live here
+file "../../models_full"                # savant (the model of record) lives here
 echo "  boltz cache                  ${BOLTZ_CACHE:-$HOME/.boltz}"
 if [ -d "${BOLTZ_CACHE:-$HOME/.boltz}" ]; then
     note "boltz weights" "OK  $(du -sh "${BOLTZ_CACHE:-$HOME/.boltz}" 2>/dev/null | cut -f1) cached"

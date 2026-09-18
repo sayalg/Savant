@@ -33,12 +33,24 @@ set -euo pipefail
 #   sbatch --array=7,13 sbatch/run_boltz.sbatch     # just those shards
 
 export BOLTZ_CACHE="${BOLTZ_CACHE:-$HOME/.boltz}"
+
+# pip wheels in a conda env (matplotlib, pulled in by torchmetrics -> lightning)
+# are built against a far newer libstdc++ than a typical cluster's /lib64. The
+# env ships its own; put it first so the loader finds CXXABI_1.3.15 there instead
+# of dying on the system copy.
+if [ -n "${CONDA_PREFIX:-}" ]; then
+    export LD_LIBRARY_PATH="${CONDA_PREFIX}/lib:${LD_LIBRARY_PATH:-}"
+fi
+
+# Honour the same EVAL_WORK override scripts/common.py uses, so a second
+# benchmark can run without its structures landing in the first one's tree.
+WORK_DIR="${EVAL_WORK:-work}"
 # --------------------------------------------------------
-mkdir -p logs work/boltz
+mkdir -p logs "${WORK_DIR}/boltz"
 
 SHARD=$(printf "shard_%02d" "${SLURM_ARRAY_TASK_ID:-0}")
-IN_DIR="work/yaml/${SHARD}"
-OUT_DIR="work/boltz/${SHARD}"
+IN_DIR="${WORK_DIR}/yaml/${SHARD}"
+OUT_DIR="${WORK_DIR}/boltz/${SHARD}"
 
 if [ ! -d "${IN_DIR}" ]; then
     echo "No such shard: ${IN_DIR} (did 01_prepare_inputs.py run with the same --num-shards?)" >&2
@@ -103,11 +115,84 @@ nvidia-smi --query-gpu=name,driver_version,memory.total --format=csv,noheader ||
 # Lightning sets up the device, minutes into the allocation, with a traceback
 # that points at Lightning rather than at the real problem.
 python - <<'PY' || exit 1
+import os
+import shutil
+import subprocess
 import sys
+
+NL = chr(10)
+PREFIX = os.environ.get("CONDA_PREFIX", "<no CONDA_PREFIX>")
+
+# Import what boltz imports, before Slurm's GPU time starts burning. Doing the
+# real import rather than a proxy means every dependency break surfaces here at
+# once, with a hint, instead of one per submission.
+try:
+    from boltz.main import cli  # noqa: F401
+except ImportError as exc:
+    msg = str(exc)
+    hints = []
+    if "CXXABI" in msg or "GLIBCXX" in msg:
+        # A pip wheel built against a newer libstdc++ than the system one. The
+        # traceback blames the wheel; the fault is which library the loader found.
+        hints = [
+            "A pip wheel needs a newer C++ runtime than /lib64 provides.",
+            "  conda install -c conda-forge 'libstdcxx-ng>=14'",
+            f"  export LD_LIBRARY_PATH={PREFIX}/lib:$LD_LIBRARY_PATH",
+            f"  strings {PREFIX}/lib/libstdc++.so.6 | grep CXXABI_1.3.1   # check",
+        ]
+    elif "numba" in msg.lower() or "numpy" in msg.lower():
+        hints = [
+            "numba/numpy pin conflict. Upgrade numba rather than downgrading "
+            "numpy, which would break wheels built against it:",
+            "  pip install -U 'numba>=0.66'      # 0.66 takes numpy<2.5, 0.67 <2.6",
+            "  pip install 'numpy<2.2'           # only if numba cannot move",
+        ]
+    sys.exit(NL.join([f"boltz is not importable in this env: {exc}", ""] + hints
+                     + ["", "Reproduce on the login node with:",
+                        "  python -c 'from boltz.main import cli'"]))
+
 import torch
 
 if not torch.cuda.is_available():
-    sys.exit("torch cannot see a GPU on this node (--gres=gpu:1 not honoured?)")
+    # Two very different causes land here and the fix differs, so ask the driver
+    # directly instead of guessing. If nvidia-smi sees a GPU then the allocation
+    # was fine and torch is simply built against a CUDA newer than the driver -
+    # the "driver is too old" warning torch prints says the version it found,
+    # e.g. 12080 = CUDA 12.8, which is recent, not old.
+    NL = chr(10)          # spelled this way so the heredoc cannot eat an escape
+    smi = shutil.which("nvidia-smi")
+    seen = ""
+    if smi:
+        try:
+            seen = subprocess.run(
+                [smi, "--query-gpu=name,driver_version", "--format=csv,noheader"],
+                capture_output=True, text=True, timeout=60).stdout.strip()
+        except Exception:
+            seen = ""
+
+    if seen:
+        sys.exit(NL.join([
+            f"A GPU IS allocated ({seen}) but torch cannot initialise CUDA.",
+            f"torch {torch.__version__} is built against CUDA {torch.version.cuda}; "
+            "the driver above supports a lower one, so the build is too NEW.",
+            "",
+            "Reinstall torch for the driver's CUDA, in this env:",
+            f"  pip install --force-reinstall --no-deps "
+            f"torch=={torch.__version__.split('+')[0]} "
+            "--index-url https://download.pytorch.org/whl/cu128",
+            "",
+            "Use the cuXXX index matching the driver: 12.8 -> cu128, 12.6 -> cu126.",
+            "If no wheel exists for this torch at that CUDA, pin an older torch.",
+        ]))
+
+    sys.exit(NL.join([
+        "No GPU visible to torch AND nvidia-smi reports none"
+        + ("" if smi else " (nvidia-smi not on PATH)") + ".",
+        f"CUDA_VISIBLE_DEVICES={os.environ.get('CUDA_VISIBLE_DEVICES', '<unset>')}, "
+        f"SLURM_JOB_GRES={os.environ.get('SLURM_JOB_GRES', '<unset>')}",
+        "This one really is the allocation: check --gres/--partition, and that the",
+        "node came from the GPU partition.",
+    ]))
 
 name = torch.cuda.get_device_name(0)
 major, minor = torch.cuda.get_device_capability(0)

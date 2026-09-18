@@ -1,148 +1,173 @@
-"""Savant command-line interface."""
+"""Command line: one protein, many ligands, JSON and/or CSV out.
 
+    savant --seq MTVPDRSEI... --smiles "CCO"
+    savant --seq target.fasta --smiles library.smi --out screen.json
+    savant --seq target.fasta --smiles library.smi --csv screen.csv --no-json
+
+Progress and summaries go to stderr, so `--out -` or `--csv -` writes clean
+output to stdout and stays pipeable:
+
+    savant --seq target.fasta --smiles library.smi --out - | jq '.targets[0].predictions[:5]'
+"""
 from __future__ import annotations
 
-import json
-import logging
+import argparse
+import sys
+import time
 
-import click
+from savant.features import parse_smiles
+from savant.inputs import dedupe_ligands, read_ligands, read_targets
+from savant.model import DEFAULT_MODEL, MODELS, Savant
+from savant.report import build_report, build_table, write_report, write_table
 
-from savant import __version__
-from savant.models import DEFAULT_MODEL_DIR
-from savant.pipeline import run_pipeline
+DEFAULT_OUT = "savant_predictions.json"
 
 
-@click.command(context_settings={"help_option_names": ["-h", "--help"]})
-@click.argument("structure", type=click.Path(exists=True, dir_okay=False))
-@click.option(
-    "--protein-chain",
-    "-p",
-    required=True,
-    help="Chain ID of the protein in the docked structure (e.g. A).",
-)
-@click.option(
-    "--ligand-chain",
-    "-l",
-    required=True,
-    help="Chain ID of the ligand in the docked structure (e.g. B).",
-)
-@click.option(
-    "--ligand-smiles",
-    "-s",
-    default=None,
-    help="Ligand SMILES. Strongly recommended: gives correct RDKit "
-    "descriptors. Without it, chemistry is guessed from 3D coordinates.",
-)
-@click.option(
-    "--output",
-    "-o",
-    type=click.Path(dir_okay=False),
-    default="savant_results.json",
-    show_default=True,
-    help="Path for the output result (JSON).",
-)
-@click.option(
-    "--workdir",
-    "-w",
-    type=click.Path(file_okay=False),
-    default=None,
-    help="Directory for intermediate files (default: a temp directory).",
-)
-@click.option(
-    "--cutoff",
-    type=float,
-    default=4.5,
-    show_default=True,
-    help="Distance cutoff (A) for counting interacting residues.",
-)
-@click.option(
-    "--ncores",
-    type=int,
-    default=None,
-    help="Cores for HADDOCK3 (default: all available).",
-)
-@click.option(
-    "--nemsteps",
-    type=int,
-    default=50,
-    show_default=True,
-    help="Energy-minimization steps for the HADDOCK3 emref module.",
-)
-@click.option(
-    "--model-dir",
-    type=click.Path(file_okay=False),
-    default=DEFAULT_MODEL_DIR,
-    show_default=True,
-    help="Directory holding the trained .pkl models (env: SAVANT_MODEL_DIR).",
-)
-@click.option(
-    "--classifier-model",
-    type=click.Path(dir_okay=False),
-    default=None,
-    help="Explicit path to the binder/nonbinder classifier .pkl "
-    "(default: auto-discover tender_comb_*_local.pkl in --model-dir).",
-)
-@click.option(
-    "--regressor-model",
-    type=click.Path(dir_okay=False),
-    default=None,
-    help="Explicit path to the pK regressor .pkl "
-    "(default: auto-discover mango_sponge_*_local.pkl in --model-dir).",
-)
-@click.option("-v", "--verbose", is_flag=True, help="Enable debug logging.")
-@click.version_option(__version__, "-V", "--version")
-def main(
-    structure,
-    protein_chain,
-    ligand_chain,
-    ligand_smiles,
-    output,
-    workdir,
-    cutoff,
-    ncores,
-    nemsteps,
-    model_dir,
-    classifier_model,
-    regressor_model,
-    verbose,
-):
-    """Predict binding for a docked protein-ligand complex.
+def log(msg):
+    """Progress to stderr, so stdout can carry JSON or CSV."""
+    print(msg, file=sys.stderr, flush=True)
 
-    STRUCTURE is a docked protein-ligand complex (.pdb/.ent or .cif/.mmcif).
-    It is converted to PDB if needed, split by chain, then processed with
-    RDKit (ligand descriptors) and HADDOCK3 (docking energetics). Those 18
-    features feed the binder/nonbinder classifier; binders are then scored for
-    pK. The result is written as JSON.
-    """
-    logging.basicConfig(
-        level=logging.DEBUG if verbose else logging.INFO,
-        format="%(asctime)s - %(levelname)s - %(message)s",
+
+def build_parser():
+    p = argparse.ArgumentParser(
+        prog="savant",
+        description="Structure-free protein-ligand binding affinity (pKd) "
+                    "prediction from a sequence and SMILES.",
+        epilog=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
 
-    try:
-        result = run_pipeline(
-            structure=structure,
-            protein_chain=protein_chain,
-            ligand_chain=ligand_chain,
-            ligand_smiles=ligand_smiles,
-            workdir=workdir,
-            cutoff=cutoff,
-            ncores=ncores,
-            nemsteps=nemsteps,
-            model_dir=model_dir,
-            classifier_model=classifier_model,
-            regressor_model=regressor_model,
-        )
-    except Exception as exc:  # surface a clean message, full trace in -v
-        logging.getLogger(__name__).error("Savant failed: %s", exc, exc_info=verbose)
-        raise SystemExit(1)
+    io = p.add_argument_group("input")
+    io.add_argument("-s", "--seq", required=True, metavar="SEQ|FILE",
+                    help="amino-acid sequence, or a path to a FASTA, plain-text "
+                         "or PDB file. A multi-record FASTA scores every ligand "
+                         "against every record.")
+    io.add_argument("-l", "--smiles", required=True, nargs="+", metavar="SMILES|FILE",
+                    help="one or more SMILES, and/or paths to .smi/.txt files "
+                         "(one SMILES per line, optional name after it) or "
+                         ".csv/.tsv files with a SMILES column. Values may be "
+                         "mixed freely.")
+    io.add_argument("--protein-chain", default="A",
+                    help="chain to read when --seq is a PDB (default: A)")
+    io.add_argument("--keep-duplicates", action="store_true",
+                    help="score repeated SMILES more than once (default: drop them)")
 
-    payload = json.dumps(result, indent=2)
-    with open(output, "w") as fh:
-        fh.write(payload + "\n")
-    click.echo(payload)
-    click.echo(f"\nSaved result to {output}", err=True)
+    out = p.add_argument_group("output")
+    out.add_argument("-o", "--out", default=DEFAULT_OUT, metavar="FILE",
+                     help=f"JSON output path, or '-' for stdout "
+                          f"(default: {DEFAULT_OUT})")
+    out.add_argument("-c", "--csv", metavar="FILE",
+                     help="also write a CSV here, or '-' for stdout. One row per "
+                          "(target, ligand); the sequence is not repeated per row")
+    out.add_argument("--no-json", action="store_true",
+                     help="skip the JSON, e.g. when you only want --csv")
+    out.add_argument("--precision", type=int, default=4,
+                     help="decimal places for pKd and Kd_nM (default: 4)")
+    out.add_argument("--no-sequence", action="store_true",
+                     help="omit the sequence from the JSON; keeps id, length and "
+                          "source")
+    out.add_argument("--top", type=int, default=None, metavar="N",
+                     help="keep only the N best-ranked ligands per target")
+    out.add_argument("-q", "--quiet", action="store_true",
+                     help="suppress progress on stderr")
+
+    mdl = p.add_argument_group("model")
+    mdl.add_argument("-m", "--model", choices=list(MODELS), default=DEFAULT_MODEL,
+                     help=f"protein encoder variant (default: {DEFAULT_MODEL})")
+    mdl.add_argument("--models", metavar="DIR|PKL",
+                     help="override the model directory or point at one bundle "
+                          ".pkl (env: SAVANT_MODEL_DIR)")
+    mdl.add_argument("--ligand-batch", type=int, default=64,
+                     help="ligands per ChemBERTa forward pass (default: 64)")
+    mdl.add_argument("--protein-batch", type=int, default=8,
+                     help="proteins per ESM2 forward pass (default: 8)")
+    return p
+
+
+def main(argv=None):
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    say = (lambda _m: None) if args.quiet else log
+
+    if args.no_json and not args.csv:
+        parser.error("--no-json leaves nothing to write; add --csv FILE")
+    if args.csv == "-" and not args.no_json and args.out == "-":
+        parser.error("--out - and --csv - would interleave on stdout; "
+                     "send one of them to a file")
+
+    ## Read and validate every input before loading a 2.5 GB encoder: a typo in a
+    ## path or an unparseable SMILES should cost a second, not a model load.
+    try:
+        targets = read_targets(args.seq, protein_chain=args.protein_chain)
+        ligands = read_ligands(args.smiles)
+    except (OSError, ValueError) as exc:
+        sys.exit(f"savant: {exc}")
+
+    if not args.keep_duplicates:
+        ligands, dropped = dedupe_ligands(ligands)
+        if dropped:
+            say(f"dropped {dropped} duplicate SMILES "
+                f"({len(ligands)} unique); --keep-duplicates to score them all")
+
+    try:
+        parse_smiles([lig.smiles for lig in ligands])
+    except ValueError as exc:
+        sys.exit(f"savant: {exc}")
+
+    n_pairs = len(targets) * len(ligands)
+    say(f"{len(targets)} target(s) x {len(ligands)} ligand(s) = {n_pairs} pair(s)")
+
+    try:
+        sv = Savant(model=args.model, models_dir=args.models, quiet=args.quiet)
+    except (FileNotFoundError, ValueError) as exc:
+        sys.exit(f"savant: {exc}")
+    say(f"model {sv.model}: {sv.n_features_in_} features, {sv.esm_model}")
+
+    smiles = [lig.smiles for lig in ligands]
+    names = [lig.name for lig in ligands]
+
+    results, t0 = [], time.perf_counter()
+    for i, target in enumerate(targets, 1):
+        label = target.id or f"target {i}"
+        say(f"[{i}/{len(targets)}] {label}: {target.length} residues, "
+            f"scoring {len(smiles)} ligand(s)")
+        try:
+            scored = sv.screen(target.sequence, smiles,
+                               ligand_batch=args.ligand_batch,
+                               protein_batch=args.protein_batch)
+        except (ValueError, RuntimeError) as exc:
+            sys.exit(f"savant: scoring {label}: {exc}")
+
+        ## screen() reorders by rank, so names have to follow the SMILES rather
+        ## than the original position. Truncation to --top is the writer's job,
+        ## so it can still record how many ligands were scored.
+        by_smiles = dict(zip(smiles, names))
+        scored["name"] = [by_smiles.get(s) for s in scored["smiles"]]
+        results.append((target, scored))
+
+    elapsed = time.perf_counter() - t0
+    say(f"scored {n_pairs} pair(s) in {elapsed:.1f}s "
+        f"({elapsed / max(n_pairs, 1):.3f}s per pair)")
+
+    if not args.no_json:
+        report = build_report(sv, results, precision=args.precision,
+                              include_sequence=not args.no_sequence, top=args.top)
+        written = write_report(report, args.out)
+        if written:
+            say(f"wrote {written}")
+
+    if args.csv:
+        table = build_table(sv, results, precision=args.precision, top=args.top)
+        written = write_table(table, args.csv)
+        if written:
+            say(f"wrote {written} ({len(table)} rows)")
+
+    for target, scored in results:
+        best = scored.iloc[0]
+        say(f"  {target.id or 'target'}: best {best['smiles'][:44]} "
+            f"pKd {best['pKd']:.2f} (Kd {best['Kd_nM']:.1f} nM)")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

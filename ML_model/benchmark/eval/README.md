@@ -1,18 +1,27 @@
-# Scoring the benchmark with Boltz-2 -> Savant + PRODIGY-LIG
+# Scoring the benchmark: Boltz-2, Savant, PRODIGY-LIG, PLAPT
 
-Runs three predictors over the 1000 pairs in `../output/savant_benchmark_1000.csv`
+Runs four predictors over the 500 pairs in `../output/savant_benchmark.csv`
 and writes every score back onto the benchmark rows.
 
-Boltz-2 goes first because it is the only one of the three that works from
-sequence + SMILES. Savant and PRODIGY-LIG both need a 3D complex, and they read
-the structure Boltz produced.
+Boltz-2 goes first because PRODIGY-LIG needs a 3-D complex and reads the
+structure Boltz produced. The structure-based model reads it too, for the
+HADDOCK3 energy terms.
 
 ```
-benchmark CSV ──▶ Boltz-2 ──▶ complex PDB ──┬──▶ Savant  (RDKit + HADDOCK3 → pK)
- (sequence,        (GPU)      chain A / B   └──▶ PRODIGY-LIG (contacts → ΔG)
-  SMILES)             │
-                      └──────────────────────────▶ its own affinity + confidence
+benchmark CSV ──▶ Boltz-2 ──▶ complex PDB ──┬──▶ structure-based  (RDKit + HADDOCK3 → pK)
+ (sequence,        (GPU)      chain A / B   └──▶ PRODIGY-LIG     (contacts → ΔG)
+  SMILES)  │          │
+           │          └──────────────────────────▶ its own affinity + confidence
+           ├──────────────────────────────────────▶ savant          (seq + SMILES, CPU)
+           └──────────────────────────────────────▶ PLAPT           (seq + SMILES)
 ```
+
+**Two Savant generations appear in the output, and they are not the same model.**
+`04_run_savant.py` runs `savant_structure_based/savant_structure_based.py` on the
+Boltz pose and writes `savant_pk` plus the seven `haddock_*` columns. The **model
+of record** is the `savant` package, run from sequence and SMILES alone by
+`score_savant_benchmark.ipynb`, which writes `savant_esm650_pk`. Every number in
+the paper is the `esm650` column.
 
 ## The chain contract
 
@@ -51,6 +60,9 @@ timed-out or requeued job is fixed by re-submitting the same script.
 
 ```bash
 cd ML_model/benchmark/eval
+# both already default to these; export them only for a different benchmark
+export BENCHMARK_CSV=$PWD/../output/savant_benchmark.csv
+export EVAL_WORK=$PWD/work
 bash check_env.sh                        # boltz, savant, haddock3, prodigy_lig, GPU, inputs
 ```
 
@@ -67,8 +79,8 @@ python scripts/01_prepare_inputs.py --num-shards 25
 python scripts/02_fetch_msas.py
 ```
 
-355 targets, one query each, cached as `work/msa/<uniprot>.a3m`. This exists so
-the 1000 pairs do not issue 1000 queries for 355 distinct answers. If your site
+One query per distinct target, cached as `work/msa/<uniprot>.a3m`. This exists so
+the 500 pairs do not issue 500 queries for 20 distinct answers. If your site
 blocks the ColabFold server entirely, run step 01 with `--msa-mode server` and set
 `BOLTZ_EXTRA_ARGS="--use_msa_server"` in the Boltz job instead.
 
@@ -110,30 +122,45 @@ remove.
 and prints anything that failed the chain contract; re-run the affected shards
 and re-run `03`.
 
-**4. Savant** (CPU, the slowest per pair — HADDOCK3 topology + minimisation):
+**4. The structure-based model** (CPU, the slowest per pair — HADDOCK3 topology
+and minimisation):
 
 ```bash
 sbatch sbatch/run_savant.sbatch          # --array=0-19 <-> NUM_SHARDS=20
 ```
 
-**5. PRODIGY-LIG** (seconds per pair, one serial job) **and the merge**:
+**5. PRODIGY-LIG** (seconds per pair, one serial job), **PLAPT**, **and the merge**:
 
 ```bash
 sbatch sbatch/run_prodigy.sbatch
+sbatch sbatch/run_plapt.sbatch
 python scripts/06_merge_scores.py
 ```
 
-Running PRODIGY after Savant is deliberate: PRODIGY-LIG's better-performing
-published model takes a HADDOCK electrostatics term (`-e`), and Savant has
-already computed one for the same complex. When the Savant JSON exists, PRODIGY
-runs twice and both numbers are reported. The `elec` fed in comes from Savant's
-`emref` stage rather than a full water refinement, so `prodigy_pkd_elec` is close
-to, but not exactly, the quantity the published model was fitted on — hence a
-separate column rather than a replacement.
+Running PRODIGY after Savant is deliberate — see below.
+
+**6. Scoring and the paper's tables** (CPU, minutes). The notebook runs
+`savant` from sequence and SMILES, assembles every method into one frame, and
+writes the `bench_*` files that `report/make_figures.py` and `Article.tex` read:
+
+```bash
+jupyter nbconvert --to notebook --execute score_savant_benchmark.ipynb \
+    --ExecutePreprocessor.timeout=-1
+python scripts/10_steiger.py             # the paired within-target test
+python scripts/08_contamination_audit.py # the disjointness audit
+```
+
+PRODIGY-LIG's better-performing published model takes a HADDOCK electrostatics
+term (`-e`), and step 4 has already computed one for the same complex — so
+PRODIGY runs after it. When that JSON exists, PRODIGY runs twice and both
+numbers are reported. The `elec` fed in comes from the `emref` stage rather than
+a full water refinement, so `prodigy_pkd_elec` is close to, but not exactly, the
+quantity the published model was fitted on — hence a separate column rather than
+a replacement. The paper reports the contacts-only `prodigy_pkd`.
 
 ## Output
 
-`output/savant_benchmark_1000_scored.csv` — the benchmark, unchanged, plus:
+`output/savant_benchmark_scored.csv` — the benchmark, unchanged, plus:
 
 | column | from | meaning |
 |---|---|---|
@@ -141,60 +168,102 @@ separate column rather than a replacement.
 | `boltz_confidence_score`, `boltz_ptm`, `boltz_iptm`, `boltz_ligand_iptm`, `boltz_complex_plddt` | Boltz | pose confidence — use `ligand_iptm` to filter poses before believing any downstream score |
 | `boltz_affinity_pred_value`, `boltz_affinity_probability_binary` | Boltz | raw affinity head: log10(IC50 [µM]), and P(binder) |
 | `boltz_affinity_pic50` | derived | `6 − affinity_pred_value` |
-| `savant_classification`, `savant_p_binder`, `savant_pk` | Savant | binder/nonbinder call, and pK for binders only |
-| `haddock_score`, `haddock_total`, `haddock_vdw`, `haddock_elec`, `haddock_desolv`, `haddock_bsa`, `haddock_num_interacting_residues` | Savant | the 7 pose-dependent features behind that prediction |
+| `savant_classification`, `savant_p_binder`, `savant_pk` | 04 | binder/nonbinder call, and pK for binders only |
+| `haddock_score`, `haddock_total`, `haddock_vdw`, `haddock_elec`, `haddock_desolv`, `haddock_bsa`, `haddock_num_interacting_residues` | 04 | the 7 pose-dependent features behind that prediction |
 | `prodigy_dg_kcal_per_mol`, `prodigy_dgscore`, `prodigy_pkd` | PRODIGY | contacts-only ΔG, and pKd = −ΔG/1.364 |
 | `prodigy_dg_elec_kcal_per_mol`, `prodigy_dgscore_elec`, `prodigy_pkd_elec` | PRODIGY | same with the HADDOCK electrostatics term |
+| `plapt_pk`, `plapt_affinity_uM` | 09 | PLAPT, from sequence + SMILES |
 | `docked_smiles`, `was_desalted` | 01 | what actually entered the structure |
 
-`output/savant_benchmark_1000_scored_summary.md` reports coverage per stage,
-agreement with the measured pKd, and the same broken out by `novelty_tier`.
-`output/failures.csv` collates every per-pair failure.
+`output/savant_benchmark_scored_summary.md` reports coverage per stage and
+agreement with the measured pKd. `output/failures.csv` collates every per-pair
+failure.
 
 Pairs a tool failed on keep NaN rather than being dropped, so coverage stays
-visible instead of silently biasing the comparison.
+visible instead of silently biasing the comparison. Boltz-2 and PRODIGY-LIG
+return nothing for 4 of the 500 pairs, which is why each paired comparison in the
+paper is computed on its own intersection and Savant's own within-target *r*
+differs slightly between rows of `bench_steiger.csv`.
+
+`score_savant_benchmark.ipynb` then adds the model-of-record columns
+(`savant_esm650_pk`, and the `esm8` / `v2` variants) and writes:
+
+| file | what the paper uses it for |
+|---|---|
+| `bench_scored.csv` | every method on every pair — the single source for the tables below |
+| `bench_A_pooled.csv` | pooled *r*, ρ, RMSE, spread ratio (`tab:pooled`, `fig:spread`) |
+| `bench_A_decomposition.csv` | between- vs. within-target *r* (`tab:decomp`, `fig:decomp`) |
+| `bench_B_summary.csv`, `bench_B_per_target.csv`, `bench_B_vs_ref.csv` | within-target ρ and the cluster bootstrap over targets (`tab:testb`, `fig:within`) |
+| `bench_runtime.csv` | measured CPU timings (`tab:runtime`) |
+| `bench_steiger.csv` | the paired within-target test, from `scripts/10_steiger.py` (`tab:steiger`) |
+| `contamination_flags.csv` | per-ligand disjointness audit, from `scripts/08_contamination_audit.py` |
+
+The notebook also computes stratified breakdowns by protein family, ligand
+chemotype and ligand size, and per-target QSAR / Tanimoto k-NN baselines. **None
+of those are reported in the paper** — the baselines were removed from it on
+2026-09-17. They are left in the notebook so the reported cells run unmodified.
 
 ## Things worth knowing before reading the numbers
 
-- **The scales are not identical.** The label is pKd from BindingDB. Boltz-2's
+- **No method beats a constant on RMSE.** Predicting the benchmark mean (7.296)
+  for every pair gives RMSE 1.273; the best method tested reaches 1.353. This is
+  the label, not the models: replicate measurements of the same pair disagree by
+  0.81 pKd, which caps achievable *R²* on this set near 0.60. Read every error
+  figure against that floor, not against zero, and report no absolute-error claim
+  from this benchmark for any method.
+- **The scales are not identical.** The label is pKd from ChEMBL. Boltz-2's
   affinity head is trained on IC50, so `boltz_affinity_pic50` is comparable in
   rank and roughly in magnitude but is not the same measurement. Savant's
   regressor was trained on this exact target. PRODIGY predicts ΔG, converted at
-  298 K. Correlation is the honest comparison; RMSE only means something for the
-  two that are genuinely on the pKd scale.
-- **37 ligands exceed Boltz-2's 128-heavy-atom affinity limit** (before
-  desalting). They still get a structure — which is all Savant and PRODIGY need —
-  but no affinity value, and `affinity_requested` is False for them.
-- **14 ligands are salts.** They are desalted to the largest organic fragment
-  before docking, because nine sodium ions in chain B would break PRODIGY's
-  one-ligand-residue rule and distort the HADDOCK energetics. `docked_smiles` is
-  what was actually used, and it is also what gets passed to Savant's `-s` so its
-  descriptors match its coordinates.
-- **Every pair is a true binder** (all have a measured Kd), so Savant's
-  classifier can only lose here — anything it calls `nonbinder` gets no pK and
-  shows up as a coverage gap, not as a wrong number.
-- **Boltz poses are predictions, not crystal structures.** Savant and PRODIGY are
-  scoring functions evaluated on a modelled pose; a bad pose gives a bad score
-  through no fault of the scorer. `boltz_ligand_iptm` is the handle for
-  separating those two failure modes.
+  298 K. Correlation is the honest comparison.
+- **Pooled correlation and within-target correlation rank the methods in nearly
+  opposite orders.** Boltz-2 leads pooled (0.412 vs. 0.227); Savant leads
+  within-target (0.436 vs. 0.386), on the same 500 pairs. The difference is how
+  each metric weights the between- and within-target components, and that
+  weighting is a property of the benchmark. Report both.
+- **Ligands exceeding Boltz-2's 128-heavy-atom affinity limit** still get a
+  structure — which is all PRODIGY and the structure-based model need — but no
+  affinity value,
+  and `affinity_requested` is False for them.
+- **Salts are desalted** to the largest organic fragment before docking, because
+  counter-ions in chain B would break PRODIGY's one-ligand-residue rule and
+  distort the HADDOCK energetics. `docked_smiles` is what was actually used, and
+  it is what gets passed to Savant's `-s` so its descriptors match its
+  coordinates.
+- **Every pair is a true binder** (all have a measured Kd or Ki), so a classifier
+  can only lose here — anything called `nonbinder` gets no pK and shows up as a
+  coverage gap, not as a wrong number.
+- **Boltz poses are predictions, not crystal structures.** PRODIGY and the
+  structure-based model are scoring functions evaluated on a modelled pose; a bad
+  pose gives a bad score through no fault of the scorer. `boltz_ligand_iptm` is
+  the handle for separating those two failure modes. The `savant` package
+  touches no structure at all, so it is unaffected.
 
 ## Layout
 
 ```
 eval/
 ├── check_env.sh
+├── score_savant_benchmark.ipynb    savant + all methods -> output/bench_*
 ├── scripts/
-│   ├── common.py               paths, the chain contract, shard helpers
-│   ├── 01_prepare_inputs.py    CSV      -> work/yaml/shard_NN/<id>.yaml + manifest
-│   ├── 02_fetch_msas.py        targets  -> work/msa/<uniprot>.a3m
-│   ├── 03_collect_boltz.py     boltz    -> work/structures/<id>.pdb + boltz_scores.csv
-│   ├── 04_run_savant.py        structs  -> work/results/savant/<id>.json
-│   ├── 05_run_prodigy.py       structs  -> work/results/prodigy/<id>.json
-│   └── 06_merge_scores.py      all      -> output/savant_benchmark_1000_scored.csv
+│   ├── common.py                   paths, the chain contract, shard helpers
+│   ├── fetch_chembl.sh             ChEMBL 37 sqlite
+│   ├── fetch_chembl34.sh           ChEMBL 34 sqlite, for the temporal gate
+│   ├── 01_prepare_inputs.py        CSV      -> work/yaml/shard_NN/<id>.yaml + manifest
+│   ├── 02_fetch_msas.py            targets  -> work/msa/<uniprot>.a3m
+│   ├── 03_collect_boltz.py         boltz    -> work/structures/<id>.pdb + boltz_scores.csv
+│   ├── 04_run_savant.py            structs  -> work/results/savant/<id>.json   (structure-based)
+│   ├── 05_run_prodigy.py           structs  -> work/results/prodigy/<id>.json
+│   ├── 06_merge_scores.py          all      -> output/savant_benchmark_scored.csv
+│   ├── 08_contamination_audit.py   scored   -> output/contamination_*
+│   ├── 09_run_plapt.py             CSV      -> plapt_pk
+│   ├── 10_steiger.py               scored   -> output/bench_steiger.csv
+│   └── prune_partial_boltz.py      removes unresumable Boltz prediction dirs
 └── sbatch/
-    ├── run_boltz.sbatch        GPU array, one task per YAML shard
-    ├── run_savant.sbatch       CPU array, round-robin over pairs
-    └── run_prodigy.sbatch      one serial task
+    ├── run_boltz.sbatch            GPU array, one task per YAML shard
+    ├── run_savant.sbatch           CPU array, round-robin over pairs
+    ├── run_prodigy.sbatch          one serial task
+    └── run_plapt.sbatch            one serial task
 ```
 
 `work/` holds everything regenerable. `work/msa/` is the one part worth keeping:

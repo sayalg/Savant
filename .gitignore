@@ -1,5 +1,27 @@
 .vscode
 .DS_Store
+__pycache__/
+*.pyc
+
+# The savant CLI's default output name.
+savant_predictions.json
+
+# The 1.9M-pair corpus. Rebuild with Scripts/00_parquet_converter.py.
 Input/all.csv
 Input/all.parquet
 Input/input.csv
+
+# Cluster-side cache of the mean-pooled embedding blocks that the training and
+# scoring notebooks read. Tens of GB, and regenerable from the corpus.
+ML_model/work_full_v2/
+
+# Development-only trees that live on the `dev` branch. They are not part of the
+# paper and are not tracked here, but a checkout switched from `dev` leaves them
+# on disk; ignoring them keeps `git status` on this branch readable instead of
+# forcing you to delete local work.
+ML_model_v2/
+ML_model/work_two_part/
+ML_model/work_screening/
+ML_model/litpcba/
+ML_model/tabfm_hpc_offline/
+savant_v2/

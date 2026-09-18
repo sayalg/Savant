@@ -2,11 +2,12 @@
 """
 Step 06 - Merge every tool's prediction back onto the benchmark rows.
 
-Produces output/savant_benchmark_1000_scored.csv: the original 1000-row
-benchmark with its labels and annotations untouched, plus one block of columns
-per tool. Nothing is dropped - pairs a tool failed on keep NaN in that tool's
-columns and are counted in the summary, so coverage stays visible instead of
-silently biasing whatever is computed downstream.
+Produces output/<benchmark stem>_scored.csv - by default
+output/savant_benchmark_scored.csv: the original 500-row benchmark with its
+labels and annotations untouched, plus one block of columns per tool. Nothing is
+dropped - pairs a tool failed on keep NaN in that tool's columns and are counted
+in the summary, so coverage stays visible instead of silently biasing whatever is
+computed downstream.
 
 Predictions are put on the label's scale wherever the tool allows it:
 
@@ -30,6 +31,10 @@ import pandas as pd
 from common import (BENCHMARK_CSV, BOLTZ_SCORES, MANIFEST, OUT, PRODIGY_RESULTS, RESULTS,
                     SAVANT_RESULTS, SCORED_CSV, SCORED_SUMMARY, ensure_dirs, log)
 
+## PLAPT needs no structure, so its results live outside the Boltz-dependent
+## tree and its coverage is not capped by whether a pose was produced.
+PLAPT_RESULTS = os.path.join(RESULTS, "plapt")
+
 LABEL = "neg_log10_affinity_M"
 
 BOLTZ_COLUMNS = [
@@ -49,6 +54,7 @@ PREDICTION_COLUMNS = {
     "savant_pk": "Savant pK",
     "prodigy_pkd": "PRODIGY-LIG",
     "prodigy_pkd_elec": "PRODIGY-LIG (+elec)",
+    "plapt_pk": "PLAPT",
 }
 
 
@@ -73,6 +79,29 @@ def load_savant(results_dir: str) -> pd.DataFrame:
         }
         row.update({f"haddock_{k}": features.get(k) for k in SAVANT_FEATURES})
         rows.append(row)
+    return pd.DataFrame(rows)
+
+
+def load_plapt(results_dir: str) -> pd.DataFrame:
+    """One row per scored pair from 09_run_plapt.py.
+
+    `plapt_pk` is already on the pKd scale - PLAPT's own key for it is
+    `neg_log10_affinity_M`, which is the benchmark's ground-truth column name, so
+    step 09 renames it on write rather than risking a silent collision here.
+    """
+    rows = []
+    for path in sorted(glob.glob(os.path.join(results_dir, "*.json"))):
+        try:
+            with open(path) as fh:
+                data = json.load(fh)
+        except json.JSONDecodeError:
+            log(f"WARNING: unreadable PLAPT JSON, ignoring: {path}")
+            continue
+        rows.append({
+            "benchmark_id": data.get("benchmark_id"),
+            "plapt_pk": data.get("plapt_pk"),
+            "plapt_affinity_uM": data.get("plapt_affinity_uM"),
+        })
     return pd.DataFrame(rows)
 
 
@@ -121,9 +150,9 @@ def table(rows: list[dict], columns: list[str]) -> str:
 def write_summary(df: pd.DataFrame, path: str) -> None:
     total = len(df)
     lines = [
-        "# Benchmark scoring run - Boltz-2 -> Savant + PRODIGY-LIG",
+        "# Benchmark scoring run - Boltz-2, Savant, PRODIGY-LIG, PLAPT",
         "",
-        f"{total} pairs from `savant_benchmark_1000.csv`. "
+        f"{total} pairs from `{os.path.basename(BENCHMARK_CSV)}`. "
         f"Label: `{LABEL}` (pKd), median {df[LABEL].median():.2f}.",
         "",
         "## Coverage",
@@ -142,6 +171,9 @@ def write_summary(df: pd.DataFrame, path: str) -> None:
          "n": int(df.get("prodigy_pkd", pd.Series(dtype=float)).notna().sum())},
         {"stage": "PRODIGY-LIG (+elec)",
          "n": int(df.get("prodigy_pkd_elec", pd.Series(dtype=float)).notna().sum())},
+        ## structure-free, so not capped by Boltz coverage
+        {"stage": "PLAPT",
+         "n": int(df.get("plapt_pk", pd.Series(dtype=float)).notna().sum())},
     ]
     for row in coverage:
         row["% of pairs"] = f"{100.0 * row['n'] / total:.1f}" if total else "0.0"
@@ -220,6 +252,13 @@ def main() -> None:
         log(f"merged PRODIGY results for {len(prodigy)} pairs")
     else:
         log(f"WARNING: no PRODIGY JSONs in {PRODIGY_RESULTS}")
+
+    plapt = load_plapt(PLAPT_RESULTS)
+    if len(plapt):
+        df = df.merge(plapt, on="benchmark_id", how="left")
+        log(f"merged PLAPT results for {len(plapt)} pairs")
+    else:
+        log(f"no PLAPT JSONs in {PLAPT_RESULTS} (run 09_run_plapt.py to add it)")
 
     df.to_csv(args.out, index=False)
     log(f"wrote {args.out} ({len(df)} rows x {len(df.columns)} columns)")
