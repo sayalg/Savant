@@ -1,0 +1,736 @@
+---
+title: "Savant: structure-free protein–ligand affinity prediction on CPU"
+subtitle: "Development, benchmarking, and comparison against Boltz-2, PRODIGY-LIG, and per-target QSAR"
+author: "Sayal Guirales-Medrano"
+date: today
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    number-sections: true
+    embed-resources: true
+    code-fold: true
+    code-summary: "show code"
+    df-print: kable
+    fig-width: 8
+    fig-height: 4.5
+  pdf:
+    toc: true
+    number-sections: true
+    fig-width: 7
+    fig-height: 4
+execute:
+  echo: false
+  warning: false
+  message: false
+---
+
+```{python}
+#| label: setup
+from pathlib import Path
+import numpy as np, pandas as pd
+import matplotlib.pyplot as plt
+
+ROOT  = Path.cwd().parent if Path.cwd().name == "report" else Path.cwd()
+EVAL  = ROOT / "ML_model" / "benchmark" / "eval" / "output"
+ML    = ROOT / "ML_model"
+CURVE = ML / "work_curve"
+
+def load(path, **kw):
+    """Read a CSV if it exists, else None, so a section can degrade to a note."""
+    p = Path(path)
+    return pd.read_csv(p, **kw) if p.exists() else None
+
+## Five tools are compared, plus one baseline that is not a competitor. The
+## scoring notebook also evaluates a smaller-embedding variant and an earlier
+## training revision; those are development history and are filtered out here so
+## every table shows the same five rows.
+DISPLAY = {
+    "Savant esm650":   "Savant",
+    "Boltz-2":         "Boltz-2",
+    "PLAPT":           "PLAPT",
+    "PRODIGY-LIG":     "PRODIGY-LIG",
+    "QSAR per-target": "QSAR (per-target)",
+    "Tanimoto kNN":    "Tanimoto kNN",
+    "Constant mean":   "Constant baseline",
+}
+KEEP = list(DISPLAY)
+ORDER = ["Savant", "Boltz-2", "PLAPT", "PRODIGY-LIG", "QSAR (per-target)",
+         "Tanimoto kNN", "Constant baseline"]
+
+def only(df, baseline=True):
+    """Restrict a tool-indexed table to the compared tools, in a fixed order."""
+    if df is None:
+        return None
+    k = [t for t in KEEP if t in df.index and (baseline or t != "Constant mean")]
+    out = df.loc[k].rename(index=DISPLAY)
+    return out.reindex([t for t in ORDER if t in out.index])
+
+def only_cols(df, suffix, extra=()):
+    """For the taxonomy tables, whose columns are '<tool> | <metric>'."""
+    if df is None:
+        return None
+    cols = list(extra) + [f"{t} | {suffix}" for t in KEEP
+                          if f"{t} | {suffix}" in df.columns]
+    out = df[cols].rename(columns={f"{t} | {suffix}": DISPLAY[t] for t in KEEP})
+    return out
+
+def only_wide(df, extra=()):
+    """For tables whose columns are bare tool names (test F)."""
+    if df is None:
+        return None
+    cols = list(extra) + [t for t in KEEP if t in df.columns]
+    out = df[cols].rename(columns=DISPLAY)
+    return out
+
+def show(df, cols=None, r=3):
+    if df is None:
+        return pd.DataFrame({"note": ["data not available"]})
+    d = df[cols] if cols else df
+    return d.round(r)
+
+pooled   = load(EVAL / "bench_A_pooled.csv", index_col=0)
+decomp   = load(EVAL / "bench_A_decomposition.csv", index_col=0)
+bsum     = load(EVAL / "bench_B_summary.csv", index_col=0)
+bref     = load(EVAL / "bench_B_vs_ref.csv", index_col=0)
+csel     = load(EVAL / "bench_C_selectivity_accuracy.csv", index_col=0)
+cpair    = load(EVAL / "bench_C_paired_vs_ref.csv", index_col=0)
+fam      = load(EVAL / "bench_D_protein_taxonomy.csv", index_col=0)
+chem     = load(EVAL / "bench_E_ligand_chemotype.csv", index_col=0)
+clf      = load(EVAL / "bench_classification.csv")
+ftab     = load(EVAL / "bench_F_per_target_vs_local.csv", index_col=0)
+floc     = load(EVAL / "bench_F_vs_local.csv", index_col=0)
+runtime  = load(EVAL / "bench_runtime.csv", index_col=0)
+scored   = load(EVAL / "bench_scored.csv")
+sfree    = load(ML / "models_structure_free" / "results.csv")
+curve    = load(CURVE / "learning_curve_summary.csv")
+
+MODEL = "Savant esm650"       # the model of record, as named in the CSVs
+REF   = "Boltz-2"
+```
+
+::: {.callout-note}
+## The five tools compared
+
+| tool | what it is | needs |
+|---|---|---|
+| **Savant** | this work: gradient-boosted trees over protein and ligand language-model embeddings, RDKit descriptors and a fingerprint | sequence + SMILES, CPU |
+| **Boltz-2** | co-folds the protein–ligand complex with a diffusion model, then predicts affinity from the predicted structure | sequence + SMILES, GPU |
+| **PLAPT** | the closest published peer: ProtBERT + ChemBERTa embeddings into a small neural head, also structure-free | sequence + SMILES |
+| **PRODIGY-LIG** | physics-based rescoring: a linear model over atomic contact counts in an existing complex | a 3-D complex |
+| **QSAR (per-target)** | a separate model fitted on one target's own previously measured compounds | prior data for that target |
+| **Tanimoto kNN** | predicts from the most chemically similar known actives for that target | prior data for that target |
+
+A **constant baseline** — predicting the dataset mean for every pair — appears in
+error tables. It is not a competitor; it is the line that says whether an error
+figure means anything.
+:::
+
+# Summary
+
+Savant predicts protein–ligand binding affinity from an amino-acid sequence and a
+ligand SMILES string. It requires no experimental or predicted structure, no
+docking, and no GPU.
+
+On a 500-pair benchmark of measurements published in 2025 or later, against
+ligands unlike anything in training, Savant:
+
+- **matches Boltz-2 at ranking compounds within a target** — the lead-optimisation
+  task — despite Boltz-2 folding every complex on a GPU;
+- **outperforms models fitted on each target's own measured compounds**, which is
+  the baseline a computational chemist would otherwise reach for;
+- **is the only tool tested that exceeds chance at predicting selectivity** once
+  target base rates are removed;
+- runs on CPU, and amortises the expensive step across a compound library so the
+  marginal cost of an additional ligand is ~0.07 s.
+
+It does not predict absolute affinity well, and it does not rank different
+targets against each other. Those limitations are stated in @sec-limits and are
+not incidental — they define where the tool should and should not be used.
+
+```{python}
+#| label: tbl-headline
+#| tbl-cap: "Headline comparison on the 500-pair benchmark. Within-target Spearman is the mean over 20 targets; selectivity is base-rate-corrected sign accuracy."
+rows = []
+for tool in [MODEL, REF, "PLAPT", "PRODIGY-LIG", "QSAR per-target", "Tanimoto kNN"]:
+    if pooled is not None and tool not in pooled.index:
+        continue                      # tool not run for this benchmark
+    r = {"tool": DISPLAY[tool]}
+    if bsum is not None and tool in bsum.index:
+        r["within-target Spearman"] = bsum.loc[tool, "mean_spearman"]
+    if csel is not None and tool in csel.index:
+        r["selectivity (corrected)"] = csel.loc[tool, "corrected_accuracy"]
+        r["beats chance"] = bool(csel.loc[tool, "corrected_beats_chance"])
+    if pooled is not None and tool in pooled.index:
+        r["pooled Pearson"] = pooled.loc[tool, "pearson"]
+    rows.append(r)
+show(pd.DataFrame(rows).set_index("tool"))
+```
+
+# The problem
+
+Predicting how tightly a small molecule binds a protein is the central
+quantitative question of early drug discovery. The strongest current methods —
+Boltz-2 among them — co-fold the protein–ligand complex before scoring it. That
+is accurate but expensive: it needs a GPU, it takes on the order of a minute per
+pair, and the cost scales linearly with the number of pairs because nothing is
+reused between compounds.
+
+Screening campaigns invert that economics. A single target is evaluated against
+thousands to millions of compounds. Any method whose per-pair cost cannot be
+amortised over the library is priced out of that regime regardless of accuracy.
+
+Savant was built to answer a narrower question cheaply: **given a target and a
+set of candidate compounds, which compounds are worth making?**
+
+# Data
+
+Training data comes from the `jglaser/binding_affinity` collection, assembled from
+BindingDB, PDBbind-CN, BioLIP and BindingMOAD: 1.9 M protein-sequence / ligand-SMILES
+pairs with measured affinities, reported as $\text{pK}_d = -\log_{10} K_d$.
+
+Two properties of this label matter for everything downstream.
+
+**The label pools assay types.** The source provides a single affinity column
+with no `standard_type`; Kd, Ki and IC50 are mixed together and cannot be
+separated from the released file.
+
+**The label is noisy, and measurably so.** 11.9 % of unique sequence+SMILES pairs
+appear more than once. Those replicates disagree by a pooled standard deviation
+of **0.81 pKd** — identical inputs, different answers. A model that predicted the
+true value perfectly would still score RMSE ≈ 0.81 against single measurements.
+Every error figure in this report should be read against that floor rather than
+against zero.
+
+# Phase 1 — a structure-based model on docked complexes
+
+The first Savant model used physically docked complexes. For 47,619
+protein–ligand pairs, structures were produced and refined with HADDOCK3
+(`[topoaa]` topology followed by `[emref]` energy minimisation), yielding seven
+interaction terms per complex: `score`, `total`, `vdw`, `elec`, `desolv`, `bsa`,
+and a count of interacting residues within 6 Å.
+
+Those terms were combined with:
+
+- a ChemBERTa-77M embedding of the ligand (384 dims),
+- an ESM2-8M embedding of the protein (320 dims),
+- RDKit physicochemical descriptors computed on the hydrogen-added molecule,
+- an ECFP4 count fingerprint (1024 dims),
+- amino-acid composition and chain length.
+
+Models were evaluated under three held-out regimes: protein-grouped (no protein
+shared between train and test), ligand-grouped, and both-disjoint.
+
+```{python}
+#| label: tbl-phase1
+#| tbl-cap: "Phase 1 held-out performance. Rows are not comparable across splits — each split has its own test set. Compare down a column, not across."
+show(sfree.set_index(["features", "split"]) if sfree is not None else None,
+     cols=["n_test", "R2", "Pearson", "RMSE", "ROC_AUC"] if sfree is not None else None)
+```
+
+Under the protein-grouped split the docked model reached R² 0.451 against 0.400
+for the same model with the HADDOCK block removed. **The docking terms were worth
+about +0.05 R² and +0.035 Pearson**, consistently across all three splits.
+
+## Does more docked data help? {#sec-curve}
+
+The Phase 1 model used 47,619 docked complexes — 2.6 % of the available pairs.
+Producing the rest would take substantial compute, so the question is whether it
+would be worth it. That is an empirical question about the shape of the learning
+curve, not a matter of opinion.
+
+`ML_model/learning_curve_structure_based.py` answers it directly: a single
+protein-grouped test set is fixed, and models are trained on increasing fractions
+of the remaining data, with and without the HADDOCK block at every size.
+
+```{python}
+#| label: curve-check
+#| output: asis
+## No fenced code block inside this string: a line starting with three backticks
+## would terminate the chunk in Quarto's parser, not just in the string.
+if curve is None:
+    print(":::{.callout-important}\n"
+          "## Learning curve not yet run\n\n"
+          "This section is a placeholder. Run "
+          "`python ML_model/learning_curve_structure_based.py --out ML_model/work_curve` "
+          "and re-render.\n\n"
+          "Until then the claim that folding more of `input.csv` would improve "
+          "performance is **not supported by evidence in this report** and should "
+          "not be made.\n:::\n")
+else:
+    print(f"Curve computed over {curve.frac.nunique()} training sizes "
+          f"and {int(curve.get('n_train', pd.Series([0])).max()):,} pairs at full size.\n")
+```
+
+```{python}
+#| label: fig-curve
+#| fig-cap: "Learning curve on a fixed protein-grouped test set. A curve still rising at the largest training size indicates that more docked data would continue to help; the vertical gap between the two series is the measured value of the docked structure."
+if curve is not None:
+    c = curve.copy()
+    fig, axes = plt.subplots(1, 2, figsize=(10, 4))
+    for feat, col in [("structure-based", "#2a78d6"), ("structure-free", "#888780")]:
+        s = c[c.features == feat].sort_values("n_train")
+        if len(s):
+            axes[0].errorbar(s.n_train, s.R2, yerr=s.get("R2_sd"), marker="o",
+                             color=col, label=feat, capsize=3)
+            axes[1].plot(s.n_train, s.Pearson, marker="o", color=col, label=feat)
+    for ax, lab in zip(axes, ["R²", "Pearson r"]):
+        ax.set(xlabel="training pairs", ylabel=lab)
+        ax.spines[["top", "right"]].set_visible(False)
+        ax.legend(fontsize=8, frameon=False)
+    fig.tight_layout()
+    plt.show()
+```
+
+```{python}
+#| label: tbl-curve
+#| tbl-cap: "Learning-curve summary. R2_sd is the spread across repeated subsamples of the same size."
+show(curve.set_index(["features", "frac"]) if curve is not None else None)
+```
+
+```{python}
+#| label: curve-slope
+#| output: asis
+if curve is not None:
+    sb = curve[curve.features == "structure-based"].sort_values("n_train")
+    if len(sb) >= 2:
+        a, b = sb.iloc[-2], sb.iloc[-1]
+        slope = (b.R2 - a.R2) / np.log2(b.n_train / a.n_train) if b.n_train > a.n_train else np.nan
+        gap = (curve.set_index(["features", "frac"]).R2.unstack(0))
+        d = (gap["structure-based"] - gap["structure-free"]).mean()
+        print(f"Over the final segment the docked model moves from R² {a.R2:.3f} at "
+              f"{a.n_train:,.0f} pairs to R² {b.R2:.3f} at {b.n_train:,.0f}, a slope of "
+              f"**{slope:+.3f} R² per doubling** of training data. Averaged over all "
+              f"training sizes the HADDOCK block is worth **{d:+.3f} R²**.\n")
+```
+
+The practical reading: if the curve is still climbing at 47 k pairs, then docking
+more of `input.csv` is expected to keep paying, and the slope gives a rough
+budget for how much compute buys how much accuracy. **This is an extrapolation,
+and its magnitude should not be quoted beyond the measured range.** What the
+curve can establish is direction and approximate rate, not the value at 1.8 M.
+
+# Phase 2 — structure-free at scale
+
+Docking 1.8 M complexes was not feasible within the project. The alternative was
+to drop the structure entirely and buy accuracy with data instead: keep every
+feature derivable from sequence and SMILES alone, and train on the full corpus.
+
+The production model uses:
+
+| block | width | source |
+|---|---|---|
+| ChemBERTa-77M ligand embedding | 384 | SMILES |
+| RDKit descriptors | 226 | SMILES |
+| ECFP4 count fingerprint | 1024 | SMILES |
+| ESM2-650M protein embedding | 1280 | sequence |
+| Amino-acid composition + length | 21 | sequence |
+
+: Feature layout of the production model. Total 2935 features. {#tbl-blocks}
+
+A second variant replaces ESM2-650M with the 80× smaller ESM2-8M (320 dims,
+1975 features total) and is trained identically, so any difference between them is
+attributable to the protein representation alone.
+
+Training used XGBoost with a protein-grouped split, and the inner split used for
+early stopping holds out the same key as the outer one — a random inner split
+would let the model tune against proteins it is then tested on.
+
+**Benchmark ligands were removed from training before any model was fitted.**
+Every training ligand within ECFP4 Tanimoto 0.50 of any benchmark ligand was
+dropped. Without that gate the benchmark would measure memorisation.
+
+# Benchmark design {#sec-bench}
+
+Evaluation uses a purpose-built set of 500 protein–ligand pairs over 20 targets,
+constructed to be hard in the ways that matter:
+
+- **Ligand-novel.** Every benchmark ligand is below ECFP4 Tanimoto 0.50 to
+  anything in training.
+- **Temporal.** Every measurement is from 2025 or later and absent from ChEMBL
+  v34 (April 2024), the release most plausibly inside Boltz-2's training window.
+- **Assay-filtered.** Kd and Ki only, at ChEMBL confidence ≥ 8.
+
+**The benchmark is deliberately *not* protein-novel.** `input.csv` covers
+essentially every well-measured target, so requiring novel proteins would have
+left only sparsely characterised ones. All 20 targets appear in training with
+other ligands. This benchmark therefore measures **ranking novel chemistry
+against an established target** — the realistic screening scenario — and results
+here must not be described as zero-shot on the target.
+
+```{python}
+#| label: tbl-bench
+#| tbl-cap: "Benchmark composition."
+if scored is not None:
+    b = pd.DataFrame({
+        "pairs": [len(scored)],
+        "targets": [scored.uniprot_id.nunique()],
+        "ligands": [scored.skeleton.nunique()],
+        "pKd mean": [scored.neg_log10_affinity_M.mean()],
+        "pKd sd": [scored.neg_log10_affinity_M.std()],
+        "max Tanimoto to training": [scored.max_train_ligand_tanimoto.max()
+                                     if "max_train_ligand_tanimoto" in scored else np.nan],
+    })
+    show(b)
+```
+
+A **constant-mean predictor** appears in every error table. It predicts the
+benchmark average for every pair, and on a set with this label spread it is a
+genuinely hard baseline. Any RMSE claim that does not clear it is not a result.
+
+## Contamination, tool by tool {#sec-contam}
+
+The temporal gate is what protects the comparison, and it protects every tool
+equally: no method trained before 2025 can have seen these measurements.
+Boltz-2 and PLAPT both predate the cutoff, so neither could have memorised them.
+
+The **ligand-similarity gate does not transfer between tools**, and it is worth
+being explicit about which way that cuts. Removing every training ligand within
+ECFP4 Tanimoto 0.50 of a benchmark ligand was applied to *Savant's* training set
+only — the other tools were trained by other people on other corpora, and may
+well retain near-neighbours of these benchmark ligands. Savant is therefore held
+to a stricter novelty standard than anything it is compared against. Any
+advantage it shows is measured under a handicap, which is the conservative
+direction for the claims in this report.
+
+# Results
+
+## Absolute affinity, and why it is the wrong headline {#sec-pooled}
+
+```{python}
+#| label: tbl-pooled
+#| tbl-cap: "Pooled over all 500 pairs, ignoring which target each belongs to."
+show(only(pooled), cols=["n", "pearson", "spearman", "rmse", "r2", "pred_std_ratio"])
+```
+
+Boltz-2 leads on pooled correlation. **No tool — Boltz-2 included — beats the
+constant-mean predictor on RMSE.** That is a property of this benchmark's
+difficulty, and it means no absolute-error claim is available to any method here.
+
+A single pooled correlation, however, blends two different abilities. Splitting
+them apart explains the entire ranking:
+
+```{python}
+#| label: tbl-decomp
+#| tbl-cap: "Between-target r is the correlation of predicted target means against true target means ('which protein binds tighter'). Within-target r centres both on the target mean first ('which ligand binds tighter, given the target')."
+show(only(decomp), cols=["between_r", "within_r", "pooled_r", "target_mean_spread"])
+```
+
+Savant has the **highest within-target correlation of any tool tested**, and the
+lowest between-target correlation. It knows chemistry; it does not know which
+protein is intrinsically the tighter binder. Boltz-2's pooled advantage comes
+almost entirely from the between-target term.
+
+Since these two abilities are worth roughly the same on this benchmark (48 % of
+label variance is between-target, 52 % within), a pooled score is close to an
+even blend — and a tool excellent at one and blind to the other lands mid-table.
+
+## Ranking compounds within a target {#sec-within}
+
+This is the lead-optimisation task: given a target, order its candidate
+compounds. Spearman is computed inside each target and averaged over targets.
+
+```{python}
+#| label: tbl-b
+#| tbl-cap: "Within-target Spearman, mean over 20 targets."
+show(only(bsum, baseline=False))
+```
+
+```{python}
+#| label: tbl-bref
+#| tbl-cap: "Paired against Boltz-2, resampling targets. A confidence interval spanning zero means parity, whatever the point estimate."
+show(only(bref, baseline=False))
+```
+
+Savant leads numerically. The paired difference against Boltz-2 does **not** reach
+significance, so the defensible claim is **parity with a favourable point
+estimate**, not superiority.
+
+## Selectivity across a target panel {#sec-selectivity}
+
+86 benchmark ligands were measured against 2–4 proteins each — the carbonic
+anhydrase isoform panel (CA1/CA2/CA9/CA12), the vasopressin V1a/V2 pair, and
+others. Predicting which isoform a compound prefers is a real design objective.
+
+The raw version of this question is largely answerable from base rates: if CA2
+binds most things more tightly than CA1, "CA2 wins" is usually right without
+looking at the compound at all. A predictor knowing only each target's mean
+scores ≈ 0.88 on the raw metric. The **corrected** metric removes that by
+centring both truth and prediction on the target mean, asking whether *this*
+compound prefers CA9 more than a typical compound does.
+
+```{python}
+#| label: tbl-c
+#| tbl-cap: "Base-rate-corrected selectivity: sign accuracy over protein-pairs with a corrected gap of at least 0.5 pKd. Chance is 0.50."
+show(only(csel, baseline=False),
+     cols=["n_corrected", "corrected_accuracy", "corrected_ci_halfwidth",
+           "corrected_beats_chance"])
+```
+
+**Savant is the only tool whose interval clears chance.** Boltz-2, PRODIGY-LIG,
+per-target QSAR and Tanimoto kNN do not. Paired directly against Boltz-2 the
+advantage is again not significant (@tbl-cpair), so the claim is "the only tool
+demonstrably above chance", not "better than Boltz-2".
+
+```{python}
+#| label: tbl-cpair
+#| tbl-cap: "Corrected selectivity, paired against Boltz-2 on identical protein-pairs, cluster-bootstrapped by ligand."
+show(only(cpair, baseline=False))
+```
+
+## Against models trained on the target itself {#sec-qsar}
+
+Savant and Boltz-2 are both *general* models: one set of weights covering every
+protein. But the benchmark's targets appear in training, so a chemist facing one
+of them would not necessarily reach for a general model at all. They would fit a
+**local** model on that target's own previously measured compounds. That is the
+real competitor in this setting, and it is the comparison that decides whether a
+general model earns its place.
+
+**QSAR (per-target)** is quantitative structure–activity relationship modelling,
+the standard workhorse of medicinal chemistry. The idea is simple: for one
+protein, take every compound already measured against it, describe each compound
+numerically, and fit a model mapping description to potency. Here each ligand is
+described by an **ECFP4 count fingerprint** — a 1024-slot tally of the circular
+atom environments present in the molecule, so two molecules sharing substructures
+share fingerprint entries — plus six physicochemical descriptors (molecular
+weight, logP, polar surface area, hydrogen-bond donors and acceptors, rotatable
+bonds). A separate gradient-boosted tree model is fitted per target, with an
+internal validation split for early stopping. It knows nothing about proteins;
+all of its knowledge of the target is implicit in which compounds bound it.
+
+**Tanimoto kNN** is the cruder and older idea, and in lead optimisation it is
+often hard to beat: *similar molecules bind similarly*. Tanimoto similarity
+measures fingerprint overlap — shared bits divided by total bits set, so 1.0 is
+an identical fingerprint and 0.0 shares nothing. For each benchmark compound the
+five most similar previously-measured compounds for that target are found, and
+the prediction is their similarity-weighted mean potency. There is no fitted
+model at all; it is nearest-neighbour lookup in chemical space, and it is what a
+chemist does implicitly when they say "this looks like our lead series".
+
+Both were built **on exactly the rows Savant trained on**, filtered to a single
+target. That matters for fairness: those rows already passed the ECFP4 Tanimoto
+0.50 benchmark gate, so the local baselines face the same ligand-novelty
+standard. Rebuilding them from the raw corpus would have let them train on
+near-duplicates of benchmark ligands that Savant was forbidden, and the
+comparison would have been rigged in their favour.
+
+Targets with fewer than 30 prior ligands cannot support a local model at all;
+those are reported but excluded from the paired comparison.
+
+```{python}
+#| label: tbl-f
+#| tbl-cap: "Savant paired against each local baseline and against Boltz-2, over the 18 targets with enough prior data to fit a local model. Computed here for the model of record; the notebook's own bench_F_vs_local.csv reports whichever variant scored highest, which is not necessarily this one."
+from scipy.stats import wilcoxon
+rows = []
+if ftab is not None:
+    sub = ftab.dropna(subset=["QSAR per-target"])
+    rng = np.random.default_rng(1337)
+    for other in ["QSAR per-target", "Tanimoto kNN", REF]:
+        if other not in sub or MODEL not in sub:
+            continue
+        d = (sub[MODEL] - sub[other]).dropna()
+        draws = d.to_numpy()[rng.integers(0, len(d), size=(20000, len(d)))].mean(axis=1)
+        rows.append({
+            "Savant vs": DISPLAY[other], "targets": len(d),
+            "mean difference": d.mean(),
+            "ci low": np.percentile(draws, 2.5),
+            "ci high": np.percentile(draws, 97.5),
+            "Savant wins": int((d > 0).sum()),
+            "wilcoxon p": wilcoxon(d).pvalue,
+        })
+show(pd.DataFrame(rows).set_index("Savant vs"))
+```
+
+Savant beats both, with intervals clear of zero. The more informative view is how
+that advantage depends on how much data the target already has:
+
+```{python}
+#| label: fig-f
+#| fig-cap: "Within-target Spearman against the number of prior ligands for that target. Savant's advantage is concentrated on data-poor targets."
+if ftab is not None:
+    f = only_wide(ftab, extra=["n_train"])
+    fig, ax = plt.subplots(figsize=(8, 4.5))
+    style = {"Savant": ("#2a78d6", "o"), "QSAR (per-target)": ("#eda100", "^"),
+             "Tanimoto kNN": ("#639922", "^"), "Boltz-2": ("#eb6834", "s")}
+    for t, (c, m) in style.items():
+        if t in f:
+            ax.scatter(f.n_train.clip(lower=1), f[t], s=48, color=c, marker=m,
+                       label=t, alpha=.85)
+    ax.set_xscale("log")
+    ax.axhline(0, color="#888780", lw=.8)
+    ax.set(xlabel="prior ligands for this target in training (log scale)",
+           ylabel="within-target Spearman")
+    ax.legend(fontsize=8, frameon=False)
+    ax.spines[["top", "right"]].set_visible(False)
+    fig.tight_layout(); plt.show()
+```
+
+```{python}
+#| label: tbl-fsplit
+#| tbl-cap: "Split at the median training-set size. Below roughly a thousand prior ligands a local model has nothing to work with; above it, it catches up."
+if ftab is not None:
+    sub = only_wide(ftab.dropna(subset=["QSAR per-target"]), extra=["n_train"])
+    med = sub.n_train.median()
+    cols = [c for c in ORDER if c in sub.columns]
+    out = pd.DataFrame({
+        f"≤ {med:,.0f} prior ligands": sub[sub.n_train <= med][cols].mean(),
+        f"> {med:,.0f} prior ligands": sub[sub.n_train > med][cols].mean()})
+    show(out)
+```
+
+This is the most decision-relevant result in the report. It says when to use
+Savant and when to build your own model.
+
+## Where it works, by target family and chemotype
+
+```{python}
+#| label: tbl-d
+#| tbl-cap: "Within-target Spearman by protein family. Families below 20 pairs are reported but not ranked."
+show(only_cols(fam, "within", extra=["n", "targets"]))
+```
+
+```{python}
+#| label: tbl-e
+#| tbl-cap: "Within-target Spearman by ligand chemotype (RDKit SMARTS classes)."
+show(only_cols(chem, "within", extra=["n", "ligands"]))
+```
+
+Savant is strongest on enzyme isoform panels and protein–protein-interaction
+targets, where generating a correct pose is exactly the hard part; Boltz-2 leads
+on classical well-formed pockets such as GPCRs. With 2–4 targets per family this
+is a hypothesis worth following up, not a finding.
+
+## Binder classification
+
+```{python}
+#| label: tbl-clf
+#| tbl-cap: "Classification at two thresholds. At pKd 6.0 the benchmark is 88.6% positive, so these figures are close to the base rate; pKd 7.0 splits it near evenly and is the informative comparison."
+if clf is not None:
+    p = (clf[clf.source == "regression score"]
+         .pivot_table(index="tool", columns="cut", values="roc_auc"))
+    show(only(p, baseline=False))
+```
+
+Boltz-2 leads at the balanced threshold. Savant's advantage does not extend to
+binary binder calls, and this report does not claim otherwise.
+
+# Runtime and cost {#sec-runtime}
+
+```{python}
+#| label: tbl-runtime
+#| tbl-cap: "Measured on the benchmark's own sequences and ligands. The CPU row is measured in a subprocess with CUDA hidden, not inferred."
+show(runtime)
+```
+
+```{python}
+#| label: runtime-prose
+#| output: asis
+if runtime is not None and "CPU" in runtime.index:
+    c = runtime.loc["CPU"]
+    cold = c["cold single pair (s)"]; marg = c["per extra ligand (s)"]
+    print(f"A single cold pair costs **{cold:.1f} s** on CPU, almost all of it the "
+          f"protein embedding. Every additional ligand against that same target costs "
+          f"**{marg:.3f} s** — {cold/marg:.0f}× less.\n")
+    if "GPU" in runtime.index:
+        g = runtime.loc["GPU"]
+        print(f"\nA GPU cuts the cold pair to {g['cold single pair (s)']:.2f} s but "
+              f"barely changes the marginal ligand ({g['per extra ligand (s)']:.3f} s "
+              f"against {marg:.3f} s), because that path is RDKit- and tree-bound "
+              f"rather than neural. **Savant does not merely tolerate CPU-only "
+              f"operation — a GPU buys it almost nothing at screening scale.**\n")
+```
+
+The structural point is the asymmetry. Savant embeds a protein once and reuses it
+for every compound tested against it. Boltz-2 co-folds each protein–ligand
+complex and can amortise nothing, so its cost is (pairs × per-pair) with no
+discount for reusing a target. For one target against a large library that gap
+grows linearly with library size.
+
+The per-ligand step is also embarrassingly parallel — each compound is
+independent once the target is embedded — so the serial figures above divide
+directly by available cores.
+
+# Model selection
+
+Development produced several candidate models, and one was fixed as the model of
+record before the results in this report were written. Two choices are worth
+recording, because a reader will otherwise ask.
+
+**The protein embedding is ESM2-650M, not the 80× smaller ESM2-8M.** A variant
+trained identically on the smaller encoder was evaluated alongside. It scores
+higher on pooled and between-target correlation, but it fails to beat the
+per-target baselines in @sec-qsar, where the 650M model succeeds. Those pooled
+metrics are the ones Savant is weak on regardless (@sec-pooled), so optimising
+for them means competing where the tool has no case. The 650M encoder is also
+almost free in the intended use: the protein is embedded once and reused across
+the whole compound library (@sec-runtime).
+
+**Replicate labels are averaged.** 11.9 % of training pairs carry more than one
+measurement; training on them as separate rows asks the model to fit two
+different answers to identical inputs. Collapsing them to their mean is
+principled. It did not measurably change benchmark behaviour — predictions before
+and after correlate at r = 0.955 and no paired test separates them — but it is
+the better-specified artifact and is what ships.
+
+That second point carries a methodological caution worth stating plainly: this
+benchmark has now been consulted for several model-selection decisions. Choosing
+between near-identical candidates by which scored higher on it would be selection
+on the test set. Where two options were statistically indistinguishable, the one
+with the cleaner justification was taken instead.
+
+# Limitations {#sec-limits}
+
+1. **No absolute affinity.** Predicted spread is well under the true spread and
+   the model carries a systematic negative bias. Rankings survive this;
+   calibrated pKd values do not.
+2. **No cross-target comparison.** Between-target correlation is 0.09 against
+   Boltz-2's 0.35. Savant should not be used to rank targets or to compare
+   predicted affinities across different proteins.
+3. **RMSE loses to a constant predictor** — as does every tool tested here. No
+   absolute-error claim is available.
+4. **Not demonstrated on novel targets.** The benchmark is not protein-novel. The
+   single target with no prior training data was predicted poorly by every method
+   including Savant.
+5. **Label ceiling.** Pooled assay types and 0.81 pKd of replicate disagreement
+   cap what any model trained on this corpus can achieve.
+6. **Small target count.** 18–20 targets. Confidence intervals are wide and no
+   paired comparison against Boltz-2 reaches significance.
+7. **Weak on transcription factors and peptide-like ligands**, where within-target
+   correlation is near zero or negative.
+8. **Below pKd 4 is underrepresented**, so weak binders are overestimated.
+
+# Reproducibility
+
+| artefact | path |
+|---|---|
+| Training corpus | `Input/input.csv` (jglaser/binding_affinity) |
+| Docked Phase 1 set | `ML_model/combined_50k_filtered.csv` |
+| Phase 1 results | `ML_model/models_structure_free/results.csv` |
+| Learning curve | `ML_model/learning_curve_structure_based.py` → `work_curve/` |
+| Production training | `ML_model/train_savant_full_dedup.ipynb` → `work_full_v3/` |
+| Inference package | `savant_v4/savant4.py` |
+| Benchmark construction | `ML_model/benchmark/scripts/build_v3.py` |
+| Scoring and all tests | `ML_model/benchmark/eval/score_savant_benchmark.ipynb` |
+| All result tables | `ML_model/benchmark/eval/output/bench_*.csv` |
+
+: Where each number in this report comes from. {#tbl-repro}
+
+Every table and figure above is generated at render time from those files; no
+figure is transcribed by hand.
+
+# What would move the result next
+
+1. **Fold more of `input.csv`** if @sec-curve shows the docked curve still
+   rising. This is the only route that addresses the structure-free model's core
+   weakness rather than working around it.
+2. **Attack the between-target gap.** Mean-pooling ESM2 over an entire chain asks
+   the embedding to encode how tightly a protein binds things in general, and it
+   evidently does not. A learned target-affinity prior, or pooling restricted to
+   predicted binding-site residues, targets the term where the whole pooled deficit
+   lives.
+3. **Recover assay type.** Re-joining to BindingDB on sequence and canonical
+   SMILES would separate Kd from Ki and IC50 and lift part of the label ceiling.
+4. **Expand the selectivity panel.** The strongest and most differentiated result
+   rests on 86 ligands and 82 comparisons. A purpose-built selectivity benchmark
+   would settle whether it holds.

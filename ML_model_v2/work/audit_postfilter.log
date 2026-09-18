@@ -1,0 +1,30 @@
+[13:17:44] benchmark: 500 pairs, 20 targets, 373 ligands
+[13:17:46] expanded:  500,555 rows, 244,559 unique ligands, 6,053 proteins
+[13:17:46] benchmark targets present in the new data: 20/20
+[13:17:46] fingerprinting benchmark ligands
+[13:17:46] fingerprinting new ligands (slow step)
+[13:19:46]   244,559 fingerprinted
+[13:19:46] computing max Tanimoto for 373 benchmark ligands vs 244,559 new
+[13:19:48]   50/373
+[13:19:50]   100/373
+[13:19:52]   150/373
+[13:19:54]   200/373
+[13:19:56]   250/373
+[13:19:58]   300/373
+[13:20:00]   350/373
+
+================ RESULT ================
+benchmark ligands audited: 373
+  1. skeleton present in new data :    0 (0.0%)
+  2. max Tanimoto >= 0.50 (GATE)   :    0 (0.0%)
+  3. SAME PAIR in new data        :    0 (0.0%)   <- invalidating if non-zero
+
+max-Tanimoto distribution: median 0.402  mean 0.387  p95 0.480  max 0.495
+  >= 0.9:    0
+  >= 0.7:    0
+  >= 0.5:    0
+  >= 0.4:  189
+
+Gate holds. The benchmark remains valid against the expanded corpus.
+
+per-ligand detail -> C:\Users\sayal\Documents\GitHub\Savant\ML_model_v2\work\audit_expanded_vs_benchmark.csv

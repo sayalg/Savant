@@ -17,11 +17,23 @@ BENCH = os.path.abspath(os.path.join(EVAL, ".."))         # ML_model/benchmark
 REPO = os.path.abspath(os.path.join(BENCH, "..", ".."))   # repo root
 
 # --- input ----------------------------------------------------------------
-BENCHMARK_CSV = os.path.join(BENCH, "output", "savant_benchmark_1000.csv")
+# Overridable so a second benchmark can be evaluated without touching the first:
+#
+#   export BENCHMARK_CSV=.../output/savant_benchmark_v3.csv
+#   export EVAL_WORK=.../eval/work_v3
+#
+# Output names are derived from the benchmark's filename, so a v3 run writes
+# savant_benchmark_v3_scored.csv and cannot clobber the v2 results.
+BENCHMARK_CSV = os.environ.get(
+    "BENCHMARK_CSV", os.path.join(BENCH, "output", "savant_benchmark_1000.csv"))
 MODEL_DIR = os.path.join(REPO, "ML_model", "train")       # savant .pkl models
 
+_STEM = os.path.splitext(os.path.basename(BENCHMARK_CSV))[0]
+
 # --- generated ------------------------------------------------------------
-WORK = os.path.join(EVAL, "work")
+# A separate work tree matters as much as a separate output name: structures and
+# YAMLs are keyed by benchmark_id, and v2/v3 ids would otherwise share a folder.
+WORK = os.environ.get("EVAL_WORK", os.path.join(EVAL, "work"))
 OUT = os.path.join(EVAL, "output")
 
 YAML_DIR = os.path.join(WORK, "yaml")            # yaml/shard_00/<id>.yaml
@@ -37,8 +49,8 @@ RESULTS = os.path.join(WORK, "results")
 SAVANT_RESULTS = os.path.join(RESULTS, "savant")      # <id>.json
 PRODIGY_RESULTS = os.path.join(RESULTS, "prodigy")    # <id>.json
 
-SCORED_CSV = os.path.join(OUT, "savant_benchmark_1000_scored.csv")
-SCORED_SUMMARY = os.path.join(OUT, "savant_benchmark_1000_scored_summary.md")
+SCORED_CSV = os.path.join(OUT, f"{_STEM}_scored.csv")
+SCORED_SUMMARY = os.path.join(OUT, f"{_STEM}_scored_summary.md")
 
 # --- the chain contract ---------------------------------------------------
 # Savant needs `-p A -l B`; PRODIGY-LIG needs `-c A B:LIG`. Both therefore

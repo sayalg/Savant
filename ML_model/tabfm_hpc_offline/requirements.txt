@@ -1,0 +1,10 @@
+# Core. Install torch FIRST with the build that matches your cluster's CUDA
+# (see env_setup.sh), then the rest.
+tabfm[pytorch]
+huggingface_hub>=0.24
+safetensors>=0.4
+numpy>=1.24
+pandas>=2.0
+scikit-learn>=1.3
+joblib>=1.3
+pyarrow>=14        # optional: parquet support in tabfm_hpc/data.py

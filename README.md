@@ -1,78 +1,125 @@
 # Savant
-## A Protein-Ligand Binding Affinity Predictor
 
-Savant is a protein to ligand binding affinity predictor using a machine learning algorithm. It has been trained on experimently derived protein-ligand docking experiments to predictor the dissociation constant (Kd).
+## A protein–ligand binding affinity predictor
 
-## `savant` command-line tool
+Savant predicts binding affinity (pKd) for a protein–ligand pair from **an amino-acid
+sequence and a ligand SMILES string**. It needs no experimental or predicted
+structure, no docking, and no GPU.
 
-Savant ships a CLI that takes a single **already-docked** protein-ligand
-complex and predicts whether the pair binds and, if so, its pK. It converts
-the structure to PDB if needed, splits it by chain, and processes it with
-**RDKit** (ligand descriptors) and **HADDOCK3** (docking energetics). The 18
-resulting features are fed — in memory, no intermediate CSV — to two trained
-models:
+```bash
+python savant_v1/savant1.py --seq MTVPDRSEIAGKWYVV... --smiles "CC(C)Cc1ccc(cc1)C(C)C(=O)O"
+```
 
-1. **`tender_comb`** (scikit-learn RandomForest) tags the complex as
-   `binder` / `nonbinder`.
-2. **`mango_sponge`** (XGBoost) predicts pK (`neg_log10_affinity_M`) — but
-   only for complexes classified as binders.
+## Why this shape
 
-The result is written as a single **JSON** document.
+On a 500-pair benchmark of measurements published in 2025 or later, against
+ligands unlike anything in training, savant v1:
 
-### Install
+- **matches Boltz-2 at ranking compounds within a target** — the lead-optimisation
+  task — despite Boltz-2 folding every complex on a GPU;
+- **beats models fitted on each target's own measured compounds**, the baseline a
+  computational chemist would otherwise reach for;
+- **is the only tool tested that exceeds chance at predicting selectivity** once
+  target base rates are removed.
+
+The expensive step is embedding the protein, and it happens once per target. Every
+additional ligand costs ~0.07 s on CPU, so screening one target against a large
+library is cheap in a way that co-folding methods cannot be.
+
+Full methodology, benchmark design and limitations: [`report/savant_report.qmd`](report/savant_report.qmd).
+
+## Install
 
 ```bash
 poetry install
 ```
 
-> **HADDOCK3 runs on Linux only.** It is declared as a dependency but guarded
-> with a `sys_platform == 'linux'` marker, so `poetry install` installs it on
-> Linux (e.g. your HPC) and skips it on Windows/macOS, where it cannot build or
-> run. Develop the CLI anywhere; run the full pipeline on Linux.
+Savant v1 needs `torch`, `transformers`, `xgboost`, `rdkit` and `joblib`. It runs on
+CPU; a GPU speeds up the first pair but barely changes screening throughput, since
+the per-ligand path is RDKit- and tree-bound rather than neural.
 
-### Usage
+## Usage
 
 ```bash
-poetry run savant DOCKED_COMPLEX.pdb \
-    --protein-chain A \
-    --ligand-chain B \
-    --ligand-smiles "CC(C)Cc1ccc(cc1)C(C)C(=O)O" \
-    --output results.json
+# one pair
+python savant_v1/savant1.py --seq MTVPDRSEI... --smiles "CCO"
+
+# the smaller, faster protein encoder
+python savant_v1/savant1.py --model esm8 --seq MTVPDRSEI... --smiles "CCO"
+
+# batch: a CSV with `seq` and `smiles` columns
+python savant_v1/savant1.py --csv pairs.csv --out scored.csv
+
+# read the sequence out of a structure you happen to have
+python savant_v1/savant1.py --pdb complex.pdb --smiles "CCO"
+```
+
+```python
+import sys; sys.path.insert(0, "savant_v1")
+from savant1 import Savant
+
+sv = Savant(model="esm650")               # or "esm8"
+sv.predict(["MTVPDRSEI..."], ["CCO"])     # -> p_binder, is_binder, pKd
 ```
 
 | Option | Description |
 | --- | --- |
-| `STRUCTURE` (arg) | Docked complex: `.pdb`/`.ent` or `.cif`/`.mmcif` (converted to PDB automatically). |
-| `-p, --protein-chain` | Chain ID of the protein (required). |
-| `-l, --ligand-chain` | Chain ID of the ligand (required). |
-| `-s, --ligand-smiles` | Ligand SMILES. **Strongly recommended** — descriptors are topological, so the SMILES yields correct chemistry. Without it, bonds are guessed from 3D coordinates and logP / aromaticity / charge may be wrong. |
-| `-o, --output` | Output JSON path (default `savant_results.json`). |
-| `--cutoff` | Distance cutoff (Å) for interacting-residue counting (default `4.5`). |
-| `--ncores` / `--nemsteps` | HADDOCK3 core count and emref minimisation steps. |
-| `--model-dir` | Directory holding the `.pkl` models (default `ML_model/train`, env `SAVANT_MODEL_DIR`). |
-| `--classifier-model` / `--regressor-model` | Explicit `.pkl` paths (default: auto-discover `tender_comb_*_local.pkl` / `mango_sponge_*_local.pkl` in `--model-dir`). |
+| `--seq` / `--smiles` | Protein sequence and ligand SMILES. |
+| `--csv` / `--out` | Batch mode: columns `seq` + `smiles`, or `pdb` + `smiles`. |
+| `--model` | `esm650` (default, ESM2-650M) or `esm8` (ESM2-8M, 80× smaller encoder). |
+| `--pdb` | Read the sequence from a structure. Bond orders inferred from geometry are guesses, so pass `--smiles` too. |
+| `--models` | Override the model directory, or point at a bundle `.pkl`. |
 
-### Output
+**Pass `--smiles` whenever you have it.** Every ligand feature is computed from the
+SMILES; connectivity perceived from 3-D coordinates turns `C(=O)O` into `C(O)O`.
 
-A JSON document with:
+## Output
 
-- `protein_sequence` — one-letter amino-acid sequence read from the protein chain.
-- `ligand_smiles` / `ligand_smiles_source` — the SMILES used (the `--ligand-smiles` input, or one perceived from the 3D ligand).
-- `features` — the 18 model inputs: RDKit descriptors (`molecular_weight`, `logP`, `num_h_donors`, `num_h_acceptors`, `num_rotatable_bonds`, `tpsa`, `num_rings`, `num_aromatic_rings`, `num_atoms`, `num_heavy_atoms`, `formal_charge`), HADDOCK3 energetics (`score`, `total`, `vdw`, `elec`, `desolv`, `bsa`), and `num_interacting_residues`.
-- `classification` — `binder` or `nonbinder`, with `classification_probabilities`.
-- `pK` — predicted `neg_log10_affinity_M` for binders, or `null` for nonbinders.
+Three columns per pair:
 
-```json
-{
-  "protein_sequence": "MTVPDRSEIAGKWYVV...",
-  "ligand_smiles": "CCCCCCCCCCCCCCCCCCCC(=O)O",
-  "ligand_smiles_source": "input",
-  "features": { "molecular_weight": 312.54, "logP": 7.11, "...": "..." },
-  "classification": "binder",
-  "classification_probabilities": { "binder": 0.536, "nonbinder": 0.464 },
-  "pK": 6.64
-}
-```
+- `pKd` — predicted `neg_log10_affinity_M`
+- `is_binder` — `pKd` above the binder threshold (6.0)
+- `p_binder` — classifier probability, or `NaN` for regressor-only bundles
 
-> The trained `.pkl` models were pickled with **scikit-learn 1.6.1** (pinned in
-> `pyproject.toml`) so they unpickle without version-mismatch warnings.
+The current models ship without a separate classifier: on the benchmark it matched
+the regressor at one threshold and lost at another, so thresholding the predicted
+pKd is both simpler and no worse — and it gives you every threshold, chosen at
+inference time.
+
+## Models
+
+`savant_v1` looks for `ML_model/work_full_v3/savant_full_<variant>.pkl`, falling back
+to `work_full_v2`, then to the raw training output in `<dir>/<variant>/`. Both
+boosters travel as `save_model()` JSON inside the bundle, so they carry their own
+column list and intercept and load across XGBoost versions.
+
+Train them with [`ML_model/train_savant_full_dedup.ipynb`](ML_model/train_savant_full_dedup.ipynb).
+
+## Limitations
+
+Read these before trusting a number:
+
+- **No absolute affinity.** Predictions are compressed toward the mean and carry a
+  systematic negative bias. Rankings survive this; calibrated pKd values do not.
+- **No cross-target comparison.** Savant is weak at telling you which of two
+  *proteins* binds more tightly. Do not use it to rank targets.
+- **RMSE loses to a constant predictor** on the benchmark — as does every tool
+  tested, including Boltz-2. No absolute-error claim is available.
+- **Not demonstrated on novel targets.** The benchmark is ligand-novel and
+  temporal, but its targets appear in training.
+- **Label ceiling.** The training corpus pools Kd, Ki and IC50 with no assay-type
+  column, and identical pairs in it disagree by a median 0.62 pKd. A perfect model
+  would still score ~0.81 RMSE against this data.
+
+## Earlier generations
+
+| Directory | What it is | Status |
+| --- | --- | --- |
+| [`savant_v1/`](savant_v1/) | **Current.** Structure-free, sequence + SMILES, CPU. | Use this |
+| [`savant_v0.5/`](savant_v0.5/) | Structure-based: adds seven HADDOCK3 energy terms from a docked complex. Runs HADDOCK3 itself. | Kept as the benchmark's structure-based arm |
+| `savant_v2/` | Replaced HADDOCK3 with fast interface counting. | Superseded |
+| `savant/` | The original CLI over an already-docked complex (`tender_comb` + `mango_sponge`). | Superseded |
+
+`savant_v0.5` is the only version that consumes docking energetics. Those six terms
+were worth about +0.05 R² internally but only +0.012 Pearson on the benchmark —
+inside the noise — at minutes per complex. That is why v1 drops them.

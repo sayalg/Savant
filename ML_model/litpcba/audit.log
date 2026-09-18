@@ -1,0 +1,13 @@
+[21:25:52] 382,743 unique LIT-PCBA ligands
+[21:25:57] 991,876 unique training-corpus ligands
+[21:25:57] fingerprinting the corpus (this is the slow step)
+[21:32:33] fingerprinting LIT-PCBA
+
+=== overlap with the training corpus ===
+  actives: n=    410  exact skeleton match 37.80%
+inactives: n=382,333  exact skeleton match 13.39%
+      all: n=382,743  exact skeleton match 13.42%
+
+A high exact-match rate among ACTIVES is the number that would invalidate an
+enrichment claim. Report it next to every EF figure.
+exit=0
