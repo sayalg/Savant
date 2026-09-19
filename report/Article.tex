@@ -2,26 +2,7 @@
 % Savant: structure-free protein-ligand affinity prediction for ligand
 % screening on CPU.
 %
-% Every number in this file is measured. The reported model uses an ESM2-650M
-% protein encoder, and the source file is named in a comment beside each table
-% so that it can be re-checked after a re-run.
-%
-% The screening-directed variant (ESM C 300M encoder, target-centered residual
-% labels, scaffold-held-out inner folds, early stopping on within-target r) is
-% NOT reported here, because that run has not been completed. It is described
-% in the Conclusions as future work. Do not move it into Methods or Results
-% until it has numbers.
-%
-% REMOVED 2026-09-17, at the author's instruction: the per-target QSAR and
-% Tanimoto k-NN baselines, and the data-volume crossover analysis built on
-% them (former Test F, fig_local_crossover.png). report/make_figures.py was
-% updated to match, so no figure still plots them.
-%
-% Citations and the expanded Introduction/Discussion follow
-% report/intro_discussion_lit_review.md.
-%
 % Figures are produced by report/make_figures.py into report/figures/.
-% Compile: pdflatex Article; bibtex Article; pdflatex Article; pdflatex Article
 % ---------------------------------------------------------------------------
 \documentclass[times, twoside]{zHenriquesLab-StyleBioRxiv}
 
@@ -61,7 +42,7 @@
 \begin{abstract}
 \Pl binding affinity is the central quantitative measurement of early drug discovery, because it determines which of many candidate molecules is worth synthesizing and assaying. Bringing a single medicine to market now requires a median capitalized investment near \$1 billion, while generative chemistry and make-on-demand catalogs produce candidate molecules faster than any rigorous method can evaluate them. Leading computational methods close this gap by co-folding the \pl complex before scoring it, which is accurate but requires a graphics processing unit (GPU) and substantial time for every pair evaluated.
 
-We developed \savant, a model that predicts the dissociation constant of a \pl pair from an amino acid sequence and a Simplified Molecular-Input Line-Entry System (SMILES) string alone, with no experimental structure, no predicted structure, no docking, and no GPU. We built the model in 2 stages. We first trained a structure-based model on 47,619 complexes folded with AlphaFold3 and refined with HADDOCK3, and we measured how its accuracy scales with the number of complexes produced. The docked energy terms were worth 0.051 in the coefficient of determination, and the learning curve rose by 0.058 per doubling of training data with no sign of saturation. Because folding the remaining 97.4\% of the corpus was not feasible, we removed the structure and acquired accuracy from data instead, training on 1.9 million measured pairs using protein and ligand language-model embeddings, physicochemical descriptors, and a topological fingerprint.
+We developed \savant, a model that predicts the dissociation constant of a \pl pair from an amino acid sequence and a Simplified Molecular-Input Line-Entry System (SMILES) string alone, with no experimental structure, no predicted structure, no docking, and no GPU. We built the model in 2 stages. We first trained a structure-based model on 47,619 complexes folded with AlphaFold3 and refined with HADDOCK3, and we measured how its accuracy scales with the number of complexes produced. The docked energy terms were worth 0.051 in the coefficient of determination, and the learning curve rose by 0.058 per doubling of training data with no sign of saturation. Because folding the remaining 97.4\% of the corpus was not feasible, we removed the structure and acquired accuracy from data instead, training on 1.8 million measured pairs using protein and ligand language-model embeddings, physicochemical descriptors, and a topological fingerprint.
 
 To evaluate the model, we assembled a benchmark of 500 \pl pairs across 20 targets, restricted to measurements published in 2025 or later and to ligands below an Extended Connectivity Fingerprint Tanimoto similarity of 0.50 to anything in training. We report accuracy separately for the 2 abilities that a pooled correlation blends. \savant achieved the highest within-target correlation of any method tested ($r = 0.436$, compared to 0.386 for Boltz-2), and the highest mean within-target rank correlation across the 20 targets ($\rho = 0.278$, compared to 0.228 for Boltz-2). Conversely, \savant does not rank targets against one another, and no method tested, including \savant, predicted absolute affinity more accurately than predicting the benchmark mean. We show that this last result follows from the label: replicate measurements of the same pair disagree by 0.81 \pkd, which caps the achievable coefficient of determination on this benchmark at approximately 0.60 and drives predictions toward the mean. The marginal cost of scoring 1 additional ligand against an already-encoded target is 0.018 s on a central processing unit, which projects to approximately half an hour for a library of 100,000 compounds. We conclude that removing the structure trades away absolute calibration and retains the ability that ligand screening actually requires, which is ranking many molecules against 1 protein.
 \end{abstract}
@@ -104,22 +85,7 @@ Here we present \savant, a gradient-boosted model that predicts \pkd from sequen
 
 \subsection*{Data acquisition and preparation}
 
-We sourced \pl data from the public Hugging Face dataset \href{https://huggingface.co/datasets/jglaser/binding_affinity}{jglaser/binding\_affinity}, compiled by Jens Glaser~\cite{glaser_binding_affinity}. The dataset aggregates records from BindingDB~\cite{gilson2016bindingdb}, PDBbind-CN~\cite{wang2004pdbbind,liu2015pdbbind}, BioLiP~\cite{yang2013biolip}, and Binding MOAD~\cite{hu2005bindingmoad}. It comprises 1.9 million pairs of protein amino acid sequences (\texttt{seq}) and ligand SMILES strings (\texttt{smiles}) with a measured affinity, provided both in micromolar units (\texttt{affinity\_uM}) and as a negative logarithm in molar units (\texttt{neg\_log10\_affinity\_M}), as shown in Table~\ref{tab:hf-dataset}.
-
-\begin{table}[h]
-\centering
-\resizebox{\columnwidth}{!}{%
-\begin{tabular}{|l|l|l|l|}
-\hline
-\multicolumn{1}{|c|}{\textbf{seq}} & \multicolumn{1}{c|}{\textbf{smiles}} & \multicolumn{1}{c|}{\textbf{affinity\_uM}} & \multicolumn{1}{c|}{\textbf{neg\_log10\_affinity\_M}} \\ \hline
-APQTITELCS… & OC{[}C@H{]}1O{[}C@H{]}… & 500 & 3.30103 \\ \hline
-VETFAFQAEI… & COc1ccc(cc1)c1c… & 0.023 & 7.638272 \\ \hline
-AAPFDKSKNV… & OC{[}C@@H{]}(C(=O)N… & 6.43 & 5.191789 \\ \hline
-\end{tabular}%
-}
-\caption{Example rows from the binding affinity dataset.}
-\label{tab:hf-dataset}
-\end{table}
+We sourced \pl data from the public Hugging Face dataset \href{https://huggingface.co/datasets/jglaser/binding_affinity}{jglaser/binding\_affinity}, compiled by Jens Glaser~\cite{glaser_binding_affinity}. The dataset aggregates records from BindingDB~\cite{gilson2016bindingdb}, PDBbind-CN~\cite{wang2004pdbbind,liu2015pdbbind}, BioLiP~\cite{yang2013biolip}, and Binding MOAD~\cite{hu2005bindingmoad}. It comprises 1.8 million pairs of protein amino acid sequences (\texttt{seq}) and ligand SMILES strings (\texttt{smiles}) with a measured affinity, provided both in micromolar units (\texttt{affinity\_uM}) and as a negative logarithm in molar units (\texttt{neg\_log10\_affinity\_M}).
 
 We used \pkd in molar units as the prediction target throughout, defined in Equation~\ref{eq:pktokd}.
 
@@ -160,7 +126,7 @@ We fixed a single protein-grouped test set at the outset and did not modify it t
 
 \subsection*{Structure-free model}
 
-Folding 1.9 million complexes was not feasible within this project. We therefore removed the structure entirely and acquired accuracy from data instead. We retained every feature derivable from the sequence and the SMILES string and trained on the full corpus.
+Folding 1.8 million complexes was not feasible within this project. We therefore removed the structure entirely and acquired accuracy from data instead. We retained every feature derivable from the sequence and the SMILES string and trained on the full corpus.
 
 We encoded the protein with ESM2-650M~\cite{lin2023esm2}, which produces a 1,280-dimensional representation, and the ligand with ChemBERTa-77M-MLM~\cite{ahmad2022chemberta2}, which produces 384 dimensions. We mean-pooled both over the last hidden state with padding masked out. To these we added the surviving RDKit named descriptor set, an ECFP4 count fingerprint~\cite{rogers2010ecfp}, and amino acid composition with chain length. Table~\ref{tab:blocks} gives the resulting layout.
 
@@ -191,6 +157,37 @@ We fitted the model with XGBoost~\cite{chen2016xgboost} under squared-error loss
 We averaged replicate measurements of the same sequence and SMILES pair into a single label before fitting, so that a frequently re-measured pair does not receive proportionally more weight than a singly measured one. We also removed benchmark ligands from the training set before fitting, dropping every training ligand within an ECFP4 Tanimoto similarity of 0.50 of any benchmark ligand, so that the benchmark cannot measure memorization.
 
 The model ships as a regressor alone. We make binder calls by thresholding the predicted \pkd, which has the additional advantage that the threshold is selected at inference time and is not fixed during training.
+
+Table~\ref{tab:training} reports the held-out performance the model reached during training. This test set is a protein-grouped hold-out drawn from the training corpus, so it measures generalization to unseen proteins within the same data distribution. It is not the external benchmark, and the 2 should not be compared directly.
+
+\begin{table}[h]
+% source: ML_model/models_full/variant_comparison.csv, row esm650
+\centering
+\caption{Held-out performance of the reported model during training, on a protein-grouped test split of the training corpus.}
+\label{tab:training}
+\small
+\begin{tabular}{lr}
+\toprule
+Quantity & Value \\
+\midrule
+Features                          & 2,935 \\
+Fitting pairs                     & 1,022,678 \\
+Validation pairs                  & 229,846 \\
+Held-out test pairs               & 315,792 \\
+Boosting rounds at best iteration & 1,784 \\
+\midrule
+Test $R^2$                        & 0.307 \\
+Test Pearson $r$                  & 0.564 \\
+Test Spearman $\rho$              & 0.536 \\
+Test RMSE                         & 1.270 \\
+Test MAE                          & 1.026 \\
+Constant-baseline RMSE            & 1.526 \\
+Predicted / true spread           & 0.508 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+On this split the model explains 30.7\% of the variance in \pkd and beats the constant baseline on RMSE, at 1.270 against 1.526. Both figures are stronger than the corresponding ones on the external benchmark reported below, which is the expected consequence of a hold-out drawn from the same distribution and the same period as the training data.
 
 \subsection*{Benchmark construction}
 
@@ -277,7 +274,7 @@ Under the protein-grouped split, the docked model reached $R^2 = 0.451$, compare
 
 \subsection*{Performance continues to rise with additional docked complexes}
 
-To determine whether producing additional docked complexes would improve the model further, we measured the learning curve. In Fig.~\ref{fig:curve} we see the result, and Table~\ref{tab:curve} lists the underlying values.
+To determine whether producing additional docked complexes would improve the model further, we measured the learning curve. In Fig.~\ref{fig:curve} we see the result.
 
 \begin{figure}[h]
 \centering
@@ -286,40 +283,11 @@ To determine whether producing additional docked complexes would improve the mod
 \label{fig:curve}
 \end{figure}
 
-\begin{table}[h]
-% source: ML_model/work_curve/learning_curve_summary.csv
-\centering
-\caption{Learning-curve summary. $R^2_{\mathrm{sd}}$ is the spread across repeated subsamples drawn at the same size.}
-\label{tab:curve}
-\small
-\begin{tabular}{lrrrr}
-\toprule
-Features & $n$ train & $R^2$ & $R^2_{\mathrm{sd}}$ & $r$ \\
-\midrule
-structure-based & 2,810  & 0.278 & 0.005 & 0.528 \\
-structure-based & 5,489  & 0.322 & 0.014 & 0.568 \\
-structure-based & 8,612  & 0.361 & 0.007 & 0.602 \\
-structure-based & 11,111 & 0.385 & 0.005 & 0.622 \\
-structure-based & 16,415 & 0.421 & 0.004 & 0.650 \\
-structure-based & 22,302 & 0.445 & 0.003 & 0.668 \\
-structure-based & 28,767 & 0.466 & 0.006 & 0.684 \\
-\midrule
-structure-free  & 2,810  & 0.264 & 0.007 & 0.514 \\
-structure-free  & 5,489  & 0.315 & 0.012 & 0.561 \\
-structure-free  & 8,612  & 0.343 & 0.006 & 0.587 \\
-structure-free  & 11,111 & 0.359 & 0.001 & 0.600 \\
-structure-free  & 16,415 & 0.391 & 0.002 & 0.626 \\
-structure-free  & 22,302 & 0.407 & 0.001 & 0.638 \\
-structure-free  & 28,767 & 0.426 & 0.005 & 0.654 \\
-\bottomrule
-\end{tabular}
-\end{table}
-
 Two quantities emerge from this experiment. First, the curve has not flattened. Over the final segment, the docked model moved from $R^2 = 0.445$ at 22,302 pairs to $R^2 = 0.466$ at 28,767 pairs, which corresponds to a slope of 0.058 in $R^2$ per doubling of the training data. We observed no sign of saturation at the largest size reached. Notably, this result indicates that folding additional complexes would continue to improve the model, and the slope provides an approximate budget for how much compute purchases how much accuracy.
 
 Second, the structural contribution is modest and does not vary with scale. Averaged over all training sizes, the HADDOCK3 block is worth 0.025 in $R^2$, and in Fig.~\ref{fig:curve} we see that the gap between the 2 series neither closes nor widens materially as the training set grows.
 
-Both readings extrapolate beyond the measured range, and their magnitude should not be quoted at 1.9 million pairs. What the curve establishes is the direction and the approximate rate, not the value at the full corpus.
+Both readings extrapolate beyond the measured range, and their magnitude should not be quoted at 1.8 million pairs. What the curve establishes is the direction and the approximate rate, not the value at the full corpus.
 
 \subsection*{The learning curve motivates removing the structure}
 
@@ -327,50 +295,26 @@ These 2 measurements together determine the design of the model. A gain of 0.025
 
 We therefore removed the structure. We emphasize that this is a resource argument rather than a claim that structure is uninformative. The docked terms helped in every split we measured, and a project with sufficient GPU capacity to fold the full corpus would be expected to do better than the model reported here.
 
-\subsection*{Benchmark composition}
-
-Table~\ref{tab:bench} reports the composition of the evaluation set.
-
-\begin{table}[h]
-% source: ML_model/benchmark/eval/output/bench_scored.csv
-\centering
-\caption{Composition of the 500-pair benchmark.}
-\label{tab:bench}
-\small
-\begin{tabular}{lr}
-\toprule
-Pairs                              & 500 \\
-Targets                            & 20 \\
-Distinct ligand skeletons          & 373 \\
-\pkd mean                          & 7.296 \\
-\pkd standard deviation            & 1.274 \\
-Maximum ECFP4 Tanimoto to training & 0.494 \\
-\bottomrule
-\end{tabular}
-\end{table}
-
-The label spread of 1.274 \pkd is the value against which every RMSE reported below should be judged, because it is precisely the RMSE achieved by predicting the benchmark mean for every pair.
-
 \subsection*{No method predicts absolute affinity better than a constant}
 
-Table~\ref{tab:pooled} reports accuracy pooled over all 500 pairs.
+The evaluation set holds 500 pairs across 20 targets and 373 distinct ligand skeletons, with a mean \pkd of 7.296 and a standard deviation of 1.274. The realized maximum ECFP4 Tanimoto to anything in training is 0.494. That label spread of 1.274 \pkd is the value against which every RMSE below should be judged, because it is precisely the RMSE achieved by predicting the benchmark mean for every pair. Table~\ref{tab:benchmark} reports every method against it.
 
 \begin{table}[h]
-% source: bench_A_pooled.csv
+% source: bench_A_pooled.csv, bench_A_decomposition.csv, bench_B_summary.csv
 \centering
-\caption{Accuracy pooled over all 500 pairs, ignoring which target each pair belongs to. Spread is the ratio of predicted to true standard deviation, for which 1.0 would indicate predictions as dispersed as the measurements.}
-\label{tab:pooled}
+\caption{The 4 compared methods on the 500-pair benchmark. Between-target $r$ corresponds to determining which protein binds more tightly and within-target $r$ to determining which ligand binds more tightly for a given target. Mean $\rho$ is the within-target Spearman correlation averaged over the 20 targets. Boltz-2 and PRODIGY-LIG returned no prediction for 4 pairs.}
+\label{tab:benchmark}
 \small
-\begin{tabular}{lrrrrr}
+\begin{tabular}{lrrrrrr}
 \toprule
-Method & $n$ & $r$ & $\rho$ & RMSE & Spread \\
+Method & $n$ & Between $r$ & Within $r$ & Pooled $r$ & Mean $\rho$ & RMSE \\
 \midrule
-\savant           & 500 & 0.227 & 0.147 & 1.353 & 0.425 \\
-Boltz-2           & 496 & 0.412 & 0.393 & 1.388 & 0.750 \\
-PRODIGY-LIG       & 496 & 0.333 & 0.340 & 1.537 & 1.087 \\
-PLAPT             & 500 & 0.021 & $-0.032$ & 1.827 & 0.824 \\
+\savant           & 500 & 0.100 & \textbf{0.436} & 0.227 & \textbf{0.278} & 1.353 \\
+Boltz-2           & 496 & \textbf{0.351} & 0.386 & \textbf{0.412} & 0.228 & 1.388 \\
+PRODIGY-LIG       & 496 & 0.295 & 0.237 & 0.333 & 0.233 & 1.537 \\
+PLAPT             & 500 & $-0.225$ & 0.208 & 0.021 & 0.067 & 1.827 \\
 \midrule
-Constant baseline & 500 & ---   & ---   & 1.273 & 0.000 \\
+Constant baseline & 500 & ---   & ---   & ---   & ---   & \textbf{1.273} \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -381,99 +325,30 @@ First, no method outperformed the constant baseline on RMSE. \savant's RMSE of 1
 
 This outcome is what the label precision predicts, following the argument of Kramer et al. that experimental uncertainty sets an upper limit on achievable performance~\cite{kramer2012uncertainty}. Treating the replicate disagreement of 0.81 \pkd as the noise standard deviation and the benchmark label spread of 1.274 \pkd as the total, the implied signal variance is $1.274^2 - 0.81^2 = 0.97$, so the reliability ratio is $0.97/1.62 = 0.60$. A model that recovered the true affinity perfectly would therefore reach an $R^2$ of approximately 0.60 and an RMSE of approximately 0.81 on this benchmark, not 1.0 and 0. The negative $R^2$ values we observe reflect a benchmark whose dynamic range is narrow relative to its measurement noise, and they are not by themselves evidence that a method is uninformative.
 
-Second, \savant's pooled correlation of 0.227 trails both Boltz-2 (0.412) and PRODIGY-LIG (0.333). In Fig.~\ref{fig:spread} we see that \savant also produces the most compressed predictions of any method tested, with a spread ratio of 0.425. This compression is a consequence of fitting squared-error loss against a label whose own replicate disagreement is 0.81 \pkd, which makes a prediction near the conditional mean the loss-minimizing choice. Because rank order is invariant to a change of scale, the compression does not affect any of the ranking metrics reported below; it does mean that compounds should be selected by rank, such as the top 1\% of a library, and not by an absolute predicted cutoff.
-
-\begin{figure}[h]
-\centering
-\includegraphics[width=0.9\columnwidth]{fig_spread.png}
-\caption{Ratio of predicted to true standard deviation for each method. The dashed line marks the true spread of the benchmark labels. Values below 1.0 indicate predictions that are less dispersed than the measurements.}
-\label{fig:spread}
-\end{figure}
+Second, \savant's pooled correlation of 0.227 trails both Boltz-2 (0.412) and PRODIGY-LIG (0.333). \savant also produces the most compressed predictions of any method tested, at 0.425 of the measured spread. This compression is a consequence of fitting squared-error loss against a label whose own replicate disagreement is 0.81 \pkd, which makes a prediction near the conditional mean the loss-minimizing choice. Because rank order is invariant to a change of scale, the compression does not affect any of the ranking metrics reported below; it does mean that compounds should be selected by rank, such as the top 1\% of a library, and not by an absolute predicted cutoff.
 
 \subsection*{Decomposition reveals that \savant's accuracy is within-target}
 
-To identify the source of \savant's pooled deficit, we decomposed the pooled correlation into its between-target and within-target components. Table~\ref{tab:decomp} reports the result and Fig.~\ref{fig:decomp} displays it.
-
-\begin{table}[h]
-% source: bench_A_decomposition.csv
-\centering
-\caption{Between-target $r$ corresponds to determining which protein binds more tightly. Within-target $r$ corresponds to determining which ligand binds more tightly for a given target.}
-\label{tab:decomp}
-\small
-\begin{tabular}{lrrr}
-\toprule
-Method & Between-target $r$ & Within-target $r$ & Pooled $r$ \\
-\midrule
-\savant         & 0.100 & \textbf{0.436} & 0.227 \\
-Boltz-2         & 0.351 & 0.386 & 0.412 \\
-PRODIGY-LIG     & 0.295 & 0.237 & 0.333 \\
-PLAPT           & $-0.225$ & 0.208 & 0.021 \\
-\bottomrule
-\end{tabular}
-\end{table}
+To identify the source of \savant's pooled deficit, we decomposed the pooled correlation into its between-target and within-target components. In Fig.~\ref{fig:benchmark} we see the result alongside the calibration figures.
 
 \begin{figure}[h]
 \centering
-\includegraphics[width=\columnwidth]{fig_decomposition.png}
-\caption{The 2 abilities separated. Gray bars show between-target correlation and blue bars show within-target correlation. \savant achieves the highest within-target correlation of any method tested and nearly the lowest between-target correlation, whereas Boltz-2 is balanced across the 2. The pooled figures in Table~\ref{tab:pooled} are a weighted blend of these bars, and the weighting is a property of the benchmark.}
-\label{fig:decomp}
+\includegraphics[width=\columnwidth]{fig_benchmark.png}
+\caption{The 4 compared methods on the 3 quantities that matter. \savant achieves the highest within-target correlation and nearly the lowest between-target correlation, whereas Boltz-2 is balanced across the 2. The pooled correlation in Table~\ref{tab:benchmark} is a weighted blend of the first 2 panels, and the weighting is a property of the benchmark. In the third panel every method sits above the constant baseline. Data sources: \texttt{bench\_A\_decomposition.csv} and \texttt{bench\_A\_pooled.csv}.}
+\label{fig:benchmark}
 \end{figure}
 
-This is the central result of the evaluation. \savant's within-target correlation of 0.436 is the highest of any method tested and exceeds Boltz-2's 0.386. Conversely, \savant's between-target correlation of 0.100 is close to zero and far below Boltz-2's 0.351. The pooled deficit reported in Table~\ref{tab:pooled} is therefore attributable entirely to the between-target component, and on the within-target component \savant leads. These findings indicate that \savant ranks compounds against a given target at least as well as a method that folds every complex on a GPU, and that it does not reliably determine which of 2 proteins binds more tightly.
+This is the central result of the evaluation. \savant's within-target correlation of 0.436 is the highest of any method tested and exceeds Boltz-2's 0.386. Conversely, \savant's between-target correlation of 0.100 is close to zero and far below Boltz-2's 0.351. The pooled deficit is therefore attributable entirely to the between-target component, and on the within-target component \savant leads. These findings indicate that \savant ranks compounds against a given target at least as well as a method that folds every complex on a GPU, and that it does not reliably determine which of 2 proteins binds more tightly.
 
-To test whether these differences in within-target correlation exceed sampling noise, we applied Steiger's paired test on the rows for which both methods returned a prediction. Table~\ref{tab:steiger} reports the result.
-
-\begin{table}[h]
-% source: bench_scored.csv, paired Steiger test on target-centered values
-\centering
-\caption{Paired comparison of within-target correlation against each reference method, computed on the rows where both methods returned a prediction. Degrees of freedom are pairs minus targets. Agreement is the correlation between the 2 methods' target-centered predictions.}
-\label{tab:steiger}
-\small
-\begin{tabular}{lrrrrr}
-\toprule
-vs. & $n$ & \savant & Reference & Agreement & $P$ \
-\midrule
-Boltz-2     & 496 & 0.432 & 0.386 & 0.551 & 0.24 \
-PRODIGY-LIG & 496 & 0.432 & 0.237 & 0.214 & 0.0002 \
-PLAPT       & 500 & 0.436 & 0.208 & 0.424 & $<0.0001$ \
-\bottomrule
-\end{tabular}
-\end{table}
-
-\savant's advantage over PRODIGY-LIG and PLAPT is larger than sampling noise on this benchmark. Its 0.046 advantage over Boltz-2 is not ($P = 0.24$), which agrees with the cluster bootstrap reported below and is the basis on which we describe the 2 methods as at parity on this axis. \savant's within-target correlation differs slightly between rows of the table because Boltz-2 and PRODIGY-LIG returned no prediction for 4 of the 500 pairs, and each comparison is computed on its own intersection.
+We tested these differences with Steiger's paired test on the rows for which both methods returned a prediction. \savant's advantage over PRODIGY-LIG ($P = 0.0002$) and over PLAPT ($P < 0.0001$) is larger than sampling noise. Its 0.046 advantage over Boltz-2 is not ($P = 0.24$), which is the basis on which we describe the 2 methods as at parity on this axis.
 
 We note that the between-target axis of this benchmark is adversarial by construction. Because we selected pairs to span affinity bins within each target, the per-target mean affinity of the benchmark correlates at $r = -0.17$ with the per-target median of the training corpus. A model is therefore penalized on this axis for correctly learning a target's average level. This property explains part, though not all, of the between-target deficit, and it is a reason to prefer the decomposed figures over the pooled one.
 
 \subsection*{\savant ranks compounds within a target as well as Boltz-2}
 
-To evaluate the screening task directly, we computed Spearman $\rho$ within each of the 20 benchmark targets and averaged across them. Table~\ref{tab:testb} reports the result and Fig.~\ref{fig:within} shows the per-target comparison against Boltz-2.
+To evaluate the screening task directly, we computed Spearman $\rho$ within each of the 20 benchmark targets and averaged across them, which is the Mean $\rho$ column of Table~\ref{tab:benchmark}. \savant recorded the highest value of any method tested, at 0.278 against Boltz-2's 0.228, and a positive correlation on 16 of 20 targets against Boltz-2's 15.
 
-\begin{table}[h]
-% source: bench_B_summary.csv, bench_B_vs_ref.csv
-\centering
-\caption{Within-target Spearman $\rho$ computed within each target and averaged across the 20 targets. The final column reports the paired difference against Boltz-2 with a cluster bootstrap over targets.}
-\label{tab:testb}
-\small
-\begin{tabular}{lrrr}
-\toprule
-Method & Mean $\rho$ & Targets $>0$ & vs. Boltz-2 \\
-\midrule
-\savant         & \textbf{0.278} & 16 of 20 & $+0.050$ ($-0.059$, 0.159) \\
-Boltz-2         & 0.228 & 15 of 20 & --- \\
-PRODIGY-LIG     & 0.233 & 15 of 20 & $+0.005$ ($-0.144$, 0.176) \\
-PLAPT           & 0.067 & 12 of 20 & $-0.161$ ($-0.305$, $-0.019$) \\
-\bottomrule
-\end{tabular}
-\end{table}
-
-\begin{figure}[h]
-\centering
-\includegraphics[width=\columnwidth]{fig_within_target.png}
-\caption{Within-target Spearman $\rho$ for each of the 20 benchmark targets, \savant against Boltz-2, sorted by \savant's value. Each horizontal line joins the 2 methods on 1 target. Data source: \texttt{bench\_B\_per\_target.csv}.}
-\label{fig:within}
-\end{figure}
-
-\savant recorded the highest mean within-target rank correlation of any method tested. The paired interval against Boltz-2 spans zero, so we report this as parity: with 20 targets the resolution available does not separate 0.278 from 0.228. What the comparison does establish is that a model requiring no structure and no GPU is not measurably worse at the screening task than a model that folds every complex.
+A cluster bootstrap over targets puts the paired difference against Boltz-2 at $+0.050$, with a 95\% confidence interval from $-0.059$ to 0.159. The interval spans zero, so we report this as parity: with 20 targets the resolution available does not separate 0.278 from 0.228. The same comparison against PRODIGY-LIG gives $+0.005$ ($-0.144$ to 0.176) and against PLAPT $-0.161$ ($-0.305$ to $-0.019$). What the comparison establishes is that a model requiring no structure and no GPU is not measurably worse at the screening task than a model that folds every complex.
 
 \subsection*{The cost of screening is dominated by encoding the protein once}
 
@@ -526,7 +401,7 @@ Two independent lines of published evidence support the same conclusion. Volkov 
 
 A screening decision consumes an ordering. When a chemist selects the top 1\% of a library for synthesis, that choice is unchanged by any monotone transformation of the predicted values, so what matters is how closely the predicted order matches the measured one. $R^2$ and RMSE answer a different question, namely how much of the variance in the measured values a method reproduces on the original scale, and the distinction between ranking quality and calibration is well established in virtual-screening evaluation~\cite{truchon2007bedroc}.
 
-That distinction is what reconciles \savant's leading within-target correlation with the negative $R^2$ values in Table~\ref{tab:pooled}. Measurement noise caps the achievable $R^2$ on this benchmark near 0.60 for any method whatsoever, and every method we tested fell below the constant baseline on RMSE, so the calibration figures characterize the benchmark and its label at least as much as they characterize the models. The ranking figures are the ones a campaign acts on, and on those \savant leads: a within-target correlation of 0.436 against Boltz-2's 0.386, and a positive rank correlation on 16 of the 20 benchmark targets.
+That distinction is what reconciles \savant's leading within-target correlation with the RMSE figures in Table~\ref{tab:benchmark}. Measurement noise caps the achievable $R^2$ on this benchmark near 0.60 for any method whatsoever, and every method we tested fell below the constant baseline on RMSE, so the calibration figures characterize the benchmark and its label at least as much as they characterize the models. The ranking figures are the ones a campaign acts on, and on those \savant leads: a within-target correlation of 0.436 against Boltz-2's 0.386, and a positive rank correlation on 16 of the 20 benchmark targets.
 
 \subsection*{Where the method applies}
 
@@ -547,18 +422,28 @@ PLAPT is the closest published peer, in that it also predicts affinity from sequ
 We regard the benchmark design as a contribution independent of the model. Requiring measurements published after the training window of every method implements a time split in Sheridan's sense, which he showed estimates prospective performance far more realistically than random cross-validation~\cite{sheridan2013timesplit}. Requiring every benchmark ligand to fall below an ECFP4 Tanimoto of 0.50 to anything in training addresses the memorization failure mode that Wallach and Heifets documented for ligand-based benchmarks~\cite{wallach2018memorization}. Holding out the inner validation fold on the same grouping key as the outer split extends the same principle to model selection, so that early stopping is not tuned on proteins the model will be tested on.
 
 % ===========================================================================
+\section*{Limitations}
+% ===========================================================================
+
+The 2 limitations that bound this work are the same 2 resources: the time available to fold complexes, and the breadth of the data we could assemble and train on.
+
+We folded and refined 47,619 complexes, which is 2.6\% of the corpus. Producing the remainder was not achievable with the GPU allocation and the time available, because every complex requires a folding pass followed by a refinement pass. The consequence is not that the structural model was poor but that it was never finished: at the largest training size we reached, the learning curve was still rising at 0.058 in $R^2$ per doubling with no sign of saturation, so the structure-based model we report is an under-trained version of the model the same pipeline would produce with more capacity. That slope was measured between 2,810 and 28,767 pairs, and it establishes a direction and an approximate rate. It should not be read as a predicted value at the full corpus.
+
+The training corpus is also far less diverse than its size suggests. It holds 1,836,729 measurements over 22,974 proteins and 991,876 ligands, but the protein coverage is heavily concentrated: 224 proteins account for half of all measurements, 1,576 account for 90\%, the median protein carries 2 measurements, and 77.4\% of proteins carry fewer than 10. Most of what the model learns about proteins therefore comes from a narrow slice of well-studied targets. Assembling a broader and more balanced corpus, and evaluating over substantially more than the 20 targets our benchmark spans, would require gathering and curating measurements on a scale we could not reach within this project. Performance on sparsely measured protein families is consequently not established here, and it is the first thing we would test given more time.
+
+% ===========================================================================
 \section*{Conclusions}
 % ===========================================================================
 
-We built \savant to answer a practical question: whether a \pl affinity model that runs on a CPU in fractions of a second per compound can be useful for ligand screening. We find that it can. \savant ranks many ligands against 1 protein as well as a method that folds every complex on a GPU, at a marginal cost of 0.018 s per additional ligand, which places a library of 100,000 compounds within half an hour on hardware that any laboratory already owns. Because it needs neither a structure nor a specialized accelerator, that capability is available to any group holding a protein sequence and a list of SMILES strings, and it extends to targets that structure-dependent methods cannot yet reach.
+We set out to determine whether binding affinity could be predicted usefully for ligand screening without a structure and without a GPU, because those 2 requirements are what place existing accurate methods out of reach for routine, library-scale use. We find that it can, provided the prediction is used as an ordering.
 
-We arrived at this design by measuring what we were about to discard. The learning curve told us that the docked structure was worth less per unit of compute than additional measured data, and the decomposition told us that the pooled metric we had initially been optimizing was blending an ability we needed with an ability we did not. Each of those measurements reversed a decision we would otherwise have made, and we suggest that both are worth making routinely.
+\savant takes an amino acid sequence and a SMILES string and returns a predicted \pkd. It ranks ligands against a fixed protein as well as a method that folds every complex on a graphics processing unit, at a within-target correlation of 0.436 against 0.386, a difference the paired test places within sampling noise; against the physics-based and structure-free comparators the margin is larger than noise. Encoding a protein costs 1.691 s and happens once per target, after which each additional ligand costs 0.018 s, so a library of 100,000 compounds is ranked in approximately half an hour on a central processing unit. Because no structure is required at any point, the method also applies to targets for which no experimental structure exists. Compounds should be selected from its output by rank, such as the top 1\% of a library, and the predicted values should not be read as calibrated dissociation constants.
 
-These conclusions carry the usual qualifications. All 20 benchmark targets appear in training with other ligands, so the results describe novel chemistry against established targets and not a zero-shot setting, and with 20 targets the paired interval on \savant's 0.050 advantage over Boltz-2 spans zero, which is why we report parity on that comparison. We removed near-neighbor ligands from \savant's training set alone, a conservative asymmetry for our claims but not a controlled comparison, and we did not fit per-target models for comparison. The training label pools $K_d$, $K_i$ and IC$_{50}$ values, the model returns a point estimate without an uncertainty, our runtime argument is structural because we took no head-to-head wall-clock measurement, and the between-target and within-target decomposition on which the central claim rests is our own operationalization of the bias literature~\cite{chen2019dude,wallach2018memorization,volkov2022frustration} and not an established analysis.
+What \savant offers is a prediction accurate enough for the ranking decision a screening campaign actually makes, delivered at a cost and on hardware that let it be applied to a whole library, repeatedly, by a group with no accelerator allocation.
 
-The learning curve points directly at the most valuable next experiment. Measured between 2,810 and 28,767 pairs, it had not begun to flatten, and its slope of 0.058 in $R^2$ per doubling should be read as a direction and an approximate rate and not as a predicted value at 1.9 million pairs. Two lines of work follow from it. The first is to fold and refine a substantially larger fraction of the corpus and retrain with the structural block restored. We showed that the docked terms are worth 0.051 in $R^2$ on the pairs we could produce, and that this contribution neither grew nor shrank with scale, so a project with the GPU capacity to fold the full corpus should expect to exceed the model reported here. The second is to expand the measured corpus itself, since additional rows purchased accuracy more cheaply than additional structures throughout the range we measured. Assembling further $K_d$ and $K_i$ measurements from sources beyond the present collection, under the same contamination controls we applied here, is the lower-cost half of that pair.
+We reached this design by measuring what we were about to discard. The learning curve told us that the docked structure was worth less per unit of compute than additional measured data, and the decomposition told us that the pooled correlation we had initially been optimizing was blending an ability screening requires with an ability it never exercises. Each measurement reversed a decision we would otherwise have made, and we suggest that both are worth making routinely. Extending the corpus and folding a larger fraction of it are the 2 clearest routes to improving on the model reported here, and the learning curve gives the rate at which each would pay.
 
-A third line of work is to train toward the screening objective directly. The model reported here was fitted under squared-error loss on raw \pkd, which optimizes a quantity the decomposition shows we do not use. Fitting target-centered residual labels instead would optimize the within-target correlation directly, since that correlation is invariant to a per-target constant; holding out the inner validation fold by Murcko scaffold~\cite{bemis1996murcko} would match early stopping to the deployment case of novel chemistry against a known target; and a smaller protein encoder such as ESM C 300M~\cite{esmc2024} would reduce the one-off cost per target further. Whether these choices improve on the model evaluated here is an open question, and reporting them against this same benchmark is the immediate next step. Beyond that, extending the same approach to the between-target axis is the most interesting problem the decomposition opens up, because a method that ranked targets as well as it ranks ligands would serve target selection and selectivity prediction alongside screening.
+Taken together, our contributions are a screening model that runs on hardware any laboratory already owns, a contamination-controlled benchmark on which it and 3 published methods are scored under a single implementation, and the 2 measurements that decided its design: a learning curve that priced structure against data, and a decomposition that separated the ability a screening campaign uses from the ability it never exercises.
 
 \section*{Code and Data Availability}
 

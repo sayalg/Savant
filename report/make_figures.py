@@ -99,7 +99,38 @@ fig.tight_layout()
 fig.savefig(FIG / "fig_within_target.png", bbox_inches="tight")
 plt.close(fig)
 
-# --- 4. prediction spread ----------------------------------------------------
+# --- 4. benchmark summary: between / within / RMSE ---------------------------
+# One figure carrying the paper's central contrast (between vs within) and the
+# calibration result (RMSE against the constant baseline), for the 4 compared
+# methods. This replaces the separate decomposition and spread figures so the
+# paper stays inside a 10-float budget.
+dec = pd.read_csv(EVAL / "bench_A_decomposition.csv", index_col=0)
+pool = pd.read_csv(EVAL / "bench_A_pooled.csv", index_col=0)
+order = [t for t in ORDER if t in dec.index and t in pool.index]
+x = np.arange(len(order))
+const = float(pool.loc["Constant mean", "rmse"])
+
+fig, axes = plt.subplots(1, 3, figsize=(7.4, 2.9))
+panels = [(dec.loc[order, "between_r"], "between-target $r$", "which protein binds tighter"),
+          (dec.loc[order, "within_r"], "within-target $r$", "which ligand binds tighter"),
+          (pool.loc[order, "rmse"], "RMSE (p$K_d$)", "lower is better")]
+for ax, (vals, ylab, sub) in zip(axes, panels):
+    ax.bar(x, vals, 0.62, color=[COLOR[t] for t in order], edgecolor="none")
+    ax.axhline(0, color="#444", lw=0.8)
+    ax.set_xticks(x)
+    ax.set_xticklabels([DISPLAY[t] for t in order], fontsize=7, rotation=30, ha="right")
+    ax.set_ylabel(ylab, fontsize=8)
+    ax.set_title(sub, fontsize=7.5, color="#555")
+    bare(ax)
+axes[2].axhline(const, color="#444", lw=0.9, ls="--")
+axes[2].text(len(order) - 0.45, const, "constant baseline", fontsize=6.5,
+             va="bottom", ha="right", color="#444")
+axes[2].set_ylim(0, max(pool.loc[order, "rmse"].max(), const) * 1.18)
+fig.tight_layout()
+fig.savefig(FIG / "fig_benchmark.png", bbox_inches="tight")
+plt.close(fig)
+
+# --- 5. prediction spread ----------------------------------------------------
 pool = pd.read_csv(EVAL / "bench_A_pooled.csv", index_col=0)
 d = pool.loc[[t for t in ORDER if t in pool.index]]
 fig, ax = plt.subplots(figsize=(6.6, 2.9))
