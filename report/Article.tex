@@ -102,6 +102,15 @@ Second, the label is noisy, and we quantified the noise directly. We found that 
 
 We collapsed replicate measurements of the same pair to their median before fitting, so that a frequently re-measured pair does not receive proportionally more weight than a singly measured one. We discarded pairs whose replicates disagreed by more than 1.5 \pkd as irreconcilable. We also identified measurements recorded at the standard censoring concentrations of 10, 100, 1,000, and 10,000 $\mu$M, which are reporting limits and not true measurements, and we excluded them from the regression target while retaining them as negatives for classification.
 
+These steps leave 1,568,316 training pairs. In Fig.~\ref{fig:labeldist} we see how that label is distributed. The corpus is not balanced around the \pkd{} 6 threshold that separates binders from non-binders, with 61.7\% of pairs above it, and both classes peak close to the cut. A model fitted on this corpus therefore sees many more examples of moderate affinity than of either extreme, and that distribution is what its predictions regress toward.
+
+\begin{figure}[h]
+\centering
+\includegraphics[width=\columnwidth]{fig_label_distribution.png}
+\caption{Distribution of the training label across all 1,568,316 collapsed \pl pairs, divided at the \pkd{} 6 binder threshold. Data source: \texttt{models\_full/dataset\_rows.csv}.}
+\label{fig:labeldist}
+\end{figure}
+
 \subsection*{Structural biology workflow}
 
 We sampled 50,000 records and processed them through an AI-based folding and interaction quantification workflow. This workflow uses AlphaFold3~\cite{abramson2024alphafold3} to fold the amino acid sequence into a protein structure, construct the small molecule, and place the ligand within the protein.
@@ -326,6 +335,15 @@ First, no method outperformed the constant baseline on RMSE. \savant's RMSE of 1
 This outcome is what the label precision predicts, following the argument of Kramer et al. that experimental uncertainty sets an upper limit on achievable performance~\cite{kramer2012uncertainty}. Treating the replicate disagreement of 0.81 \pkd as the noise standard deviation and the benchmark label spread of 1.274 \pkd as the total, the implied signal variance is $1.274^2 - 0.81^2 = 0.97$, so the reliability ratio is $0.97/1.62 = 0.60$. A model that recovered the true affinity perfectly would therefore reach an $R^2$ of approximately 0.60 and an RMSE of approximately 0.81 on this benchmark, not 1.0 and 0. The negative $R^2$ values we observe reflect a benchmark whose dynamic range is narrow relative to its measurement noise, and they are not by themselves evidence that a method is uninformative.
 
 Second, \savant's pooled correlation of 0.227 trails both Boltz-2 (0.412) and PRODIGY-LIG (0.333). \savant also produces the most compressed predictions of any method tested, at 0.425 of the measured spread. This compression is a consequence of fitting squared-error loss against a label whose own replicate disagreement is 0.81 \pkd, which makes a prediction near the conditional mean the loss-minimizing choice. Because rank order is invariant to a change of scale, the compression does not affect any of the ranking metrics reported below; it does mean that compounds should be selected by rank, such as the top 1\% of a library, and not by an absolute predicted cutoff.
+
+In Fig.~\ref{fig:calibration} we see what that compression looks like pair by pair, against Boltz-2 on the same measurements. Regressing predicted on measured \pkd{} gives a slope of 0.10 for \savant and 0.31 for Boltz-2, where a perfectly calibrated method would give 1.0. \savant's binned means run from 6.0 to 7.0 across a measured range of 8 log units, so its prediction moves in the right direction but by a fraction of the true distance. Boltz-2 tracks the identity line more closely and disperses its predictions more widely, at the cost of substantially more scatter about the trend. The 2 panels make the trade explicit: neither method is calibrated, and the one closer to calibrated is not the one that orders compounds better.
+
+\begin{figure}[h]
+\centering
+\includegraphics[width=\columnwidth]{fig_calibration.png}
+\caption{Predicted against measured \pkd{} for \savant and Boltz-2 on the benchmark. The dashed line is the identity. Black markers give the mean prediction within each 1-unit bin of measured affinity, with the standard error of that mean. Slope is the least-squares fit of predicted on measured, spread is the ratio of predicted to measured standard deviation, and $\rho$ is the pooled Spearman correlation. Data source: \texttt{bench\_scored.csv}.}
+\label{fig:calibration}
+\end{figure}
 
 \subsection*{Decomposition reveals that \savant's accuracy is within-target}
 

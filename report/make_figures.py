@@ -147,3 +147,84 @@ fig.savefig(FIG / "fig_spread.png", bbox_inches="tight")
 plt.close(fig)
 
 print("wrote:", *[p.name for p in sorted(FIG.glob('*.png'))], sep="\n  ")
+
+# --- 6. calibration, Savant against Boltz-2 ----------------------------------
+# Predicted against measured, with the identity line and a binned calibration
+# curve. The contrast is the point: both methods order compounds, but their
+# predictions occupy very different fractions of the measured range.
+from scipy.stats import spearmanr
+
+bench = pd.read_csv(EVAL / "bench_scored.csv")
+TRUTH = "neg_log10_affinity_M"
+SPEC = [("Savant", "savant_esm650_pk", "#2a78d6"),
+        ("Boltz-2", "boltz_affinity_pic50", "#e2603a")]
+
+fin = bench[TRUTH].notna()
+lo = float(bench.loc[fin, TRUTH].min()) - 0.4
+hi = float(bench.loc[fin, TRUTH].max()) + 0.4
+
+fig, axes = plt.subplots(1, 2, figsize=(7.0, 3.5), sharex=True, sharey=True)
+for ax, (name, col, colr) in zip(axes, SPEC):
+    m = bench[TRUTH].notna() & bench[col].notna()
+    y = bench.loc[m, TRUTH].to_numpy(float)
+    p = bench.loc[m, col].to_numpy(float)
+
+    ax.plot([lo, hi], [lo, hi], color="#888", lw=1.0, ls="--", zorder=1)
+    ax.scatter(y, p, s=13, color=colr, alpha=0.45, edgecolor="none", zorder=2)
+
+    # binned calibration curve: mean prediction within each measured-pKd bin
+    edges = np.arange(np.floor(y.min()), np.ceil(y.max()) + 1, 1.0)
+    idx = np.digitize(y, edges) - 1
+    cx, cy, ce = [], [], []
+    for k in range(len(edges) - 1):
+        sel = idx == k
+        if sel.sum() >= 5:
+            cx.append((edges[k] + edges[k + 1]) / 2)
+            cy.append(p[sel].mean())
+            ce.append(p[sel].std() / np.sqrt(sel.sum()))
+    ax.errorbar(cx, cy, yerr=ce, marker="o", ms=4, lw=1.6, color="#222",
+                capsize=2, zorder=3, label="binned mean")
+
+    slope = np.polyfit(y, p, 1)[0]
+    ax.set_title(f"{name}\nslope {slope:.2f}   spread {p.std()/y.std():.2f}   "
+                 r"$\rho$ " f"{spearmanr(y, p).correlation:.2f}", fontsize=8)
+    ax.set_xlabel("measured p$K_d$")
+    bare(ax)
+axes[0].set_ylabel("predicted p$K_d$")
+axes[0].legend(fontsize=7, frameon=False, loc="upper left")
+axes[0].set_xlim(lo, hi); axes[0].set_ylim(lo, hi)
+fig.tight_layout()
+fig.savefig(FIG / "fig_calibration.png", bbox_inches="tight")
+plt.close(fig)
+
+# --- 7. training label distribution ------------------------------------------
+# dataset_rows.csv is the collapsed training set itself: its row count equals
+# n_fit + n_val + n_test from variant_comparison.csv, so this is the label the
+# model actually saw rather than the raw corpus before replicate collapsing.
+TRAIN = REPO / "ML_model" / "models_full" / "dataset_rows.csv"
+y = pd.read_csv(TRAIN, usecols=["neg_log10_affinity_M"]).neg_log10_affinity_M.to_numpy(np.float32)
+
+CUT = 6.0
+fig, ax = plt.subplots(figsize=(7.0, 3.0))
+bins = np.arange(0, 15.25, 0.25)
+ax.hist(y[y < CUT], bins=bins, color="#b9b3a8", edgecolor="none")
+ax.hist(y[y >= CUT], bins=bins, color="#2a78d6", edgecolor="none")
+ax.axvline(CUT, color="#222", lw=1.4)
+top = ax.get_ylim()[1]
+ax.set_ylim(0, top * 1.22)
+## Annotations sit above the tallest bar rather than over it: both classes peak
+## close to the cut, so anything placed at the axis top overlaps the histogram.
+ax.text(CUT - 0.3, top * 1.10, f"non-binder\n{100*(y<CUT).mean():.1f}%",
+        ha="right", va="top", fontsize=8.5, color="#6b6459")
+ax.text(CUT + 0.3, top * 1.10, f"binder\n{100*(y>=CUT).mean():.1f}%",
+        ha="left", va="top", fontsize=8.5, color="#1b5fa8")
+ax.annotate(r"p$K_d$ = 6", xy=(CUT, top * 0.55), xytext=(CUT + 1.9, top * 0.72),
+            fontsize=8, color="#222",
+            arrowprops=dict(arrowstyle="->", color="#222", lw=0.9))
+ax.set_xlabel("measured p$K_d$")
+ax.set_ylabel("training pairs")
+ax.set_xlim(0, 13)
+bare(ax)
+fig.tight_layout()
+fig.savefig(FIG / "fig_label_distribution.png", bbox_inches="tight")
+plt.close(fig)
