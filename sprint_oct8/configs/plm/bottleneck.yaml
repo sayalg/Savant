@@ -1,0 +1,8 @@
+# Frozen ESM-2 650M through a low-rank projection plus dropout and train-time noise.
+#
+# The default for the MVP, on the reasoning in Section 6.7: a bottleneck keeps the
+# residue-level chemistry the pocket head needs while throttling the family-identity
+# signal that hurts on strict splits. It is a hypothesis; Phase 9 decides.
+mode: esm2_bottleneck
+bottleneck: 64
+noise_std: 0.10

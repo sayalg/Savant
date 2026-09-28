@@ -1,0 +1,14 @@
+# The full term set. NOT a starting point - Section 0.4.6 forbids building this
+# before the Tier 1 gate passes on the MVP, and Section 8 Wave 3 requires each term
+# to be added as a SINGLE-CHANGE ablation against the G2 winner and kept only if it
+# improves the protein-cluster validation split with a CI excluding zero.
+#
+# This file exists so the "all terms on" reference point is reproducible, and so
+# the combination of surviving terms has somewhere to live once they are known.
+_inherit: variant_a
+
+energy:
+  terms: [vdw, hbond, hydrophobic, coulomb, aromatic, halogen]
+  desolvation: true
+  entropy: false        # still off: Section 6.2 marks it highest gaming risk
+  residual: true

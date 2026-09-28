@@ -1,0 +1,8 @@
+# Variant B (PLAN.md Section 2.2): a coordinate-hypothesis head makes the geometry
+# consistent BY CONSTRUCTION, so the triangle inequality holds by arithmetic rather
+# than by penalty. More complex; research-grade. Interface is identical to A - the
+# energy module never learns which variant produced its distributions.
+_inherit: variant_a
+
+variant: B
+n_hypotheses: 4

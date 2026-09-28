@@ -1,0 +1,12 @@
+# Bulk artifacts. $PFPL_WORK relocates these to scratch on a cluster; the defaults
+# keep a laptop run self-contained.
+work/
+logs/
+__pycache__/
+*.pyc
+
+# splits/ and reports/ are deliberately NOT ignored: PLAN.md Section 5.3 requires
+# the splits to be frozen and version-controlled, and every number in the paper is
+# measured against a specific one. The .npz files are small.
+!splits/
+!reports/

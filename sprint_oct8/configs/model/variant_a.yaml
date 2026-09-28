@@ -1,0 +1,30 @@
+# Variant A (PLAN.md Section 2.2): independent per-pair distance distributions,
+# made geometrically honest by the anchor + triangle penalty + contact prior rather
+# than by construction. This is the MVP.
+
+variant: A
+d_model: 256
+pair_dim: 96
+pair_blocks: 3
+heads: 8
+ligand_layers: 3
+dropout: 0.1
+topk: 64                # pocket residues entering the pair module (Section 6.1)
+param_hidden: 128
+param_scale: 2.0        # how far a head may move from its force-field prior
+pocket_hidden: 128
+clm_dim: 0              # >0 when Uni-Mol atom embeddings are cached
+n_hypotheses: 4         # Variant B only
+
+energy:
+  mode: predicted       # predicted | oracle  (Section 6.6)
+  # Wave 2 = the MVP terms only. Coulomb / aromatic / halogen / desolvation /
+  # entropy are Wave 3 and are added ONE AT A TIME through an ablation gate
+  # (Sections 0.4.6, 8 Wave 3). Do not enable them here to "see if it helps".
+  terms: [vdw, hbond, hydrophobic]
+  vdw_form: lj          # lj | morse  - a Phase 9 ablation, not a preference
+  rotor: true
+  desolvation: false    # Wave 3, gated; needs ligand feature tier ABC
+  entropy: false        # Wave 3, gated; highest gaming risk, always ablate
+  residual: false       # report physics-only vs physics+residual separately
+  residual_clamp: 2.0

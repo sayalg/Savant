@@ -1,0 +1,94 @@
+# Affinity corpus, built from scratch. Kd and Ki only; see src/pfpl/data/schema.py
+# for the enforcement and tests/test_labels.py for the proof.
+#
+# Two phases, deliberately separate:
+#   1a  scripts/phase1a_acquire.py   the ONLY step that touches the network
+#   1b  scripts/phase1_harmonize.py  reads those local files, no network at all
+#
+# Section 4.4 expects several hundred thousand Kd/Ki pairs after dedupe, Ki-dominated.
+# Phase 1 prints the real numbers next to that expectation.
+
+sources:
+  # ---- the four bulk literature sources -----------------------------------
+  # They overlap heavily (largely the same primary literature, re-curated), which
+  # is exactly why harmonize.dedupe_measurements keys on
+  # (doc_id, protein, InChIKey, type, rounded pK) rather than trusting any one of
+  # them. Double counting is not merely wasteful: the same measurement on both
+  # sides of a split is leakage.
+  chembl:
+    loader: chembl
+    enabled: true
+    # Filters are applied at the QUERY in phase1a: Kd/Ki, assay_type=B (BINDING
+    # assays only - a Ki from a functional assay is a different quantity),
+    # confidence 9, units nM. Censored values are NOT filtered; they become
+    # one-sided labels (Section 5.2).
+    require_pchembl: false     # derive pK from value_nM when pchembl is null
+
+  bindingdb:
+    loader: bindingdb
+    enabled: true
+    path: null                 # null -> the newest dump under data/raw/bindingdb
+    single_chain_only: true
+
+  papyrus:
+    loader: papyrus
+    enabled: true
+    path: null                 # null -> the release under data/raw/papyrus
+    quality: high
+    keep_censored: true
+
+  iuphar:
+    loader: iuphar
+    enabled: true
+    path: null
+    species: Human
+
+  # ---- crystal-linked: labels AND geometry AND the Stage 3 fine-tune set ----
+  # Highest source weight (1.0, Section 5.2) because the measurement is tied to a
+  # solved structure of the very complex being measured. Licensed: stage it
+  # yourself, nothing here downloads it.
+  pdbbind:
+    loader: pdbbind
+    enabled: true
+    # OPTIONAL: if it is not staged, Phase 1 warns loudly and carries on rather
+    # than failing the whole corpus build. Every other enabled source that is
+    # missing IS an error - it means acquisition did not finish - but PDBbind is
+    # licensed and cannot be fetched, so "absent" is a legitimate state.
+    #
+    # What skipping it costs is recorded in corpus_meta.json and reports/phase_1.md
+    # so it cannot go unnoticed: no crystal-linked labels, NO DISTOGRAM ANCHOR
+    # (Section 2.1 lists it as required), and no Stage 3 fine-tune.
+    optional: true
+    path: data/raw/pdbbind     # relative to $PFPL_WORK; $PDBBIND overrides it
+    index: null
+    sequences: null            # null -> extract from the staged structures, cached
+    extract: true
+
+  # ---- legacy ---------------------------------------------------------------
+  # The previous sprint's merged_kd_ki.csv. OFF: that file did not survive the
+  # rebuild, and re-deriving the corpus from primary sources is the point of this
+  # run. Turn it on only to reproduce an old number, and note that it was built
+  # under the old pipeline's filters.
+  local_csv:
+    loader: local_csv
+    enabled: false
+    path: merged_kd_ki.csv
+    assume_type: null
+
+# Section 5.2 filters
+max_sequence_length: 1022     # the ESM-2 window; longer sequences are cropped
+min_heavy_atoms: 5
+max_heavy_atoms: 80
+drop_mutants: true            # unparseable mutations are excluded, not wild-typed
+drop_peptides: true
+min_ligands_per_target: 1
+
+# Section 5.3
+split: protein_cluster        # random|scaffold|protein_cluster|double|time|leave_viral_out
+val_frac: 0.10
+test_frac: 0.20
+mmseqs_identity: 0.30
+mmseqs_tsv: mmseqs/clusters.tsv   # relative to $PFPL_WORK
+
+max_atoms: 64                 # ligand heavy atoms + ring centroids
+ligand_feature_tier: A        # A | AB | ABC  (Section 6.3, a Phase 9 ablation factor)

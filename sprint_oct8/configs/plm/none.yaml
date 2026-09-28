@@ -1,0 +1,11 @@
+# No protein language model at all: residue-type embedding only.
+#
+# PLAN.md Section 6.7 is emphatic that the PLM is an empirical question. Frozen
+# ESM-2 features REDUCED Pearson on every strict LP-PDBBind tier (-0.024 / -0.042 /
+# -0.064), and the previous sprint reproduced that on its own data: the best model
+# with 7,680 ESM dimensions reached per-target rho 0.158 against 0.325 for a
+# protein-blind ligand-only control on 613 held-out clusters.
+#
+# This mode is therefore a serious candidate, not a sanity check. Run it.
+mode: none
+noise_std: 0.0

@@ -1,0 +1,3 @@
+# Frozen ESM-2 650M, full 1280-d per residue.
+mode: esm2_650m_full
+noise_std: 0.05

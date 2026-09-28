@@ -1,0 +1,15 @@
+# Stage 1: geometry pretraining on crystal + modelled structures (PLAN.md Section 8).
+#
+# No affinity loss at all. The pocket head and the distogram must reach a good state
+# BEFORE any pK gradient exists, or Stage 2 starts from a random geometry and the
+# affinity loss shapes it - which is precisely the Section 2.1 failure.
+#
+# If no structural data is staged this stage cannot run, and the physics claim is
+# not supported. scripts/phase2_geometry.py says so rather than proceeding.
+_inherit: stage2_affinity
+
+stage: geometry
+epochs: 20
+lr: 5.0e-4
+select_on: val_neg_disto_nll   # fit() maximises; NLL is negated in loop.py
+uncertainty: false

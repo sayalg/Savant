@@ -1,0 +1,88 @@
+# PRE-REGISTRATION (PLAN.md Sections 0.3.7, 7.4). Fill this in BEFORE running the
+# matrix, commit it, and do not edit it after seeing results.
+#
+# Why this file is load-bearing: twelve concurrent GPUs make it trivial to run three
+# hundred configurations and report the best one. A dPearson of 0.02 selected post
+# hoc from three hundred trials is weak evidence dressed as a result. Declaring the
+# matrix up front, capping the trials, and counting them in the ledger is what keeps
+# the Phase 9 numbers interpretable.
+#
+# src/pfpl/ledger.py checks every run against this and marks anything outside it
+# `exploratory`. Exploratory runs are allowed; a headline claim resting on one has
+# to say so.
+
+version: 1
+declared_on: 2026-09-19
+declared_by: sayal
+
+# ---------------------------------------------------------------- success tiers
+# Section 9. Stated here so they cannot be redefined after the fact.
+tiers:
+  tier1_required: >
+    Beats the matched no-physics control (model=variant_c) on the protein-cluster
+    split by dPearson >= 0.02 with a bootstrap CI excluding zero, AND beats
+    ligand_only and target_mean.
+  tier2_target: >
+    Within the bootstrap CI of PIGNet2-with-Boltz-2-poses on the sealed benchmark
+    for the primary rank metrics. Expected to be hard.
+  tier3_stretch: >
+    Within the CI of Boltz-2 on the benchmark, or better on the low-overlap subset.
+    Very unlikely.
+
+primary_metric: pearson
+primary_split: protein_cluster
+tier1_margin: 0.02
+selection_rule: >
+  Model selection uses the protein-cluster VALIDATION split only. The sealed
+  benchmark is scored ONCE per model version (Section 0.4.3).
+
+# ------------------------------------------------------------- ablation matrix
+# Phase 9. Every axis below is declared; anything outside is exploratory.
+matrix:
+  model.variant: [A, B, C]
+  plm.mode: [none, esm2_650m_full, esm2_bottleneck, esm2_pocket_window, esmc_300m]
+  data.split: [protein_cluster, double, scaffold, leave_viral_out]
+  model.energy.vdw_form: [lj, morse]
+  model.energy.residual: [false, true]
+  model.energy.terms:
+    - [vdw, hbond, hydrophobic]                       # MVP
+    - [vdw, hbond]                                    # drop hydrophobic
+    - [vdw, hydrophobic]                              # drop hbond
+    - [hbond, hydrophobic]                            # drop vdW
+  data.ligand_feature_tier: [A, AB, ABC]
+  label.label_types:
+    - [Kd, Ki]
+    - [Kd]
+
+# Wave 3 only, and only after Gate G2 passes. One at a time against the G2 winner.
+wave3_single_changes:
+  - model.energy.terms=+coulomb
+  - model.energy.terms=+aromatic
+  - model.energy.terms=+halogen
+  - model.energy.desolvation=true
+  - model.energy.entropy=true
+  - plm.mode=plm_lora
+
+seeds: [1337, 1338, 1339, 1340, 1341]
+
+# ---------------------------------------------------------------- sweep control
+# Section 7.4: cap the trials and declare the search space.
+trial_cap: 400
+sweep_space:
+  train.lr: [1.0e-4, 3.0e-4, 1.0e-3]
+  model.d_model: [192, 256, 384]
+  model.topk: [32, 64, 96]
+  model.param_scale: [1.0, 2.0, 3.0]
+sweep_trial_cap: 48
+sweep_selection_split: protein_cluster_val
+
+# ------------------------------------------------------------------ what we will
+#                                                                     report
+reporting_commitments:
+  - Every results table carries ligand_only and target_mean (Section 0.3.2).
+  - The shortcut check is reported for every split, whether or not it fires.
+  - The compute ledger's configuration count appears in the final report.
+  - Negative results and every ablation table are kept (Section 0.5.5).
+  - Inference cost per complex is recorded for every model, including the folding
+    step for pose-based pipelines (Sections 0.3.10, 9).
+  - The oracle-vs-predicted gap is reported on structure-bearing test sets.

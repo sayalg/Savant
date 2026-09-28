@@ -1,0 +1,42 @@
+# Base configuration. Compose with groups and override on the command line:
+#
+#   python scripts/train.py -o model=variant_a -o plm=bottleneck -o data.split=double
+#
+# `defaults` works like Hydra's: each entry loads configs/<group>/<name>.yaml and
+# lands under cfg.<group>. See src/pfpl/conf.py.
+defaults:
+  - data: kd_ki
+  - model: variant_a
+  - plm: bottleneck
+  - train: stage2_affinity
+
+seed: 1337
+run_name: null            # defaults to <variant>_<plm>_<split>_s<seed>
+
+# PLAN.md Section 1. pKd = -log10(Kd in M); Ki is pooled with Kd by default and the
+# Kd-only model is an ablation (label_types: [Kd]). IC50/EC50 are excluded entirely
+# and there is no switch that admits them.
+label:
+  target: pKd
+  label_types: [Kd, Ki]
+  use_ic50_only_structures: false   # Section 4.2; geometry-only, affinity masked
+
+eval:
+  primary_metric: pearson           # Section 9's comparison rule is written in this
+  secondary_metric: per_target_spearman_median
+  tier1_margin: 0.02                # dPearson required over the no-physics control
+  min_target_n: 8
+  bootstrap_n: 2000
+  report_splits: [protein_cluster, double, scaffold]
+
+# Section 5.3.1: keys are built once by scripts/phase0_verify.py and frozen.
+quarantine:
+  path: splits/quarantine.json
+  mode: strict                      # exact | strict
+  identity_threshold: 0.30
+  tanimoto_threshold: 0.90
+
+compute:
+  workers: 8
+  pin_memory: true
+  amp: true

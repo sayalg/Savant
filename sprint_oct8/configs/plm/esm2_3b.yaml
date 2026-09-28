@@ -1,0 +1,5 @@
+# ESM-2 3B. A compute ablation the HPC budget makes possible (Section 7.3).
+# 2560-d per residue; the embedding cache is ~2x the 650M one, so check the storage
+# estimate from scripts/phase4_embed.py --estimate before launching the array.
+mode: esm2_3b
+noise_std: 0.05

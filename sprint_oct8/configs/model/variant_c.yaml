@@ -1,0 +1,12 @@
+# Variant C (PLAN.md Sections 2.2, 8, 9): the matched NO-PHYSICS control.
+#
+# Every physics claim in this project is measured against this model and nothing
+# else. It shares the protein trunk, the ligand trunk, the pocket head and the pair
+# module; the only difference is that a generic MLP replaces the energy function.
+# Section 9's rule: physics must beat this by dPearson >= 0.02 on the
+# protein-cluster split with a bootstrap CI excluding zero.
+#
+# Keep its capacity matched. A control that is quietly smaller is not a control.
+_inherit: variant_a
+
+variant: C

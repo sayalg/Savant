@@ -1,0 +1,17 @@
+# Stage 0: physics pretraining on QM dimers - Splinter / DES370K / SPICE
+# (PLAN.md Section 8, Stage 0). An ABLATION (on/off), not a prerequisite.
+#
+# The site-parameter network regresses SAPT0 components with the physical
+# correspondence spelled out: electrostatics <-> Coulomb, exchange <-> repulsion,
+# dispersion <-> attraction. The point is to give the parameter heads a meaning
+# grounded in something other than the affinity labels.
+_inherit: stage2_affinity
+
+stage: physics
+epochs: 40
+lr: 1.0e-3
+batch_size: 256
+select_on: val_sapt_rmse
+uncertainty: false
+dataset: splinter          # splinter | des370k | spice
+sapt_components: [elst, exch, indu, disp]

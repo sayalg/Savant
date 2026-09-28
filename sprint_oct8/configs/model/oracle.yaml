@@ -1,0 +1,12 @@
+# Variant D (PLAN.md Section 6.6): the same model with REAL coordinates.
+#
+# Two uses. (1) The cost-of-pose-free ablation: run the identical model with true
+# and predicted geometry on structure-bearing test sets; the gap separates geometry
+# error from physics error. (2) The teacher for the optional Wave-3 distillation.
+#
+# Only runs on rows that carry crystal geometry, so it can never be the headline.
+_inherit: variant_a
+
+variant: A
+energy:
+  mode: oracle

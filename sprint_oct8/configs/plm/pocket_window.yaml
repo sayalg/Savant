@@ -1,0 +1,8 @@
+# Full-width embeddings, zeroed outside the predicted pocket window.
+#
+# Note the ordering this requires: the pocket head runs on the PLM-FREE residue
+# representation (see models/pocket.py), so the window exists before the trunk
+# reads the embeddings. That also removes a shortcut - pocket selection cannot be
+# driven by protein-family identity.
+mode: esm2_pocket_window
+noise_std: 0.05

@@ -1,0 +1,65 @@
+# Stage 2: affinity pretraining on all harmonised Kd/Ki data, with replayed
+# structural batches (PLAN.md Section 8).
+#
+# This is the stage where the Section 2.1 failure mode appears. Gradient descent
+# discovers that moving probability mass toward each pair's energy minimum lowers
+# the affinity loss, and without a counterweight the model converges on an
+# over-attractive geometry that no arrangement of atoms could produce. Three things
+# hold it back and none of them is optional here:
+#
+#   disto     the supervised cross-entropy ANCHOR, on mixed batches throughout
+#   triangle  |E[d_ij] - E[d_ik]| <= the ligand's own d_jk
+#   contact   expected contacts per ligand atom must match crystal statistics
+#
+# train/loop.py refuses to run this stage with disto=0 unless allow_unanchored is
+# passed explicitly, so a zero here is a recorded ablation rather than an accident.
+
+stage: affinity
+epochs: 30
+batch_size: 32
+lr: 3.0e-4
+weight_decay: 1.0e-2
+grad_clip: 1.0
+patience: 6
+amp: true
+uncertainty: true          # heteroscedastic head (Section 8, Stage 2)
+geometry_replay_frac: 0.25 # fraction of each epoch drawn from structure-bearing rows
+select_on: val_pearson     # model selection on the protein-cluster VAL split only
+
+loss_weights:
+  default:
+    affinity: 1.0
+    disto: 1.0
+    pocket: 1.0
+    triangle: 0.1
+    contact: 0.05
+    prior: 0.01
+    coord: 0.5
+    censored: 0.5
+  geometry:
+    affinity: 0.0
+    disto: 1.0
+    pocket: 1.0
+    triangle: 0.2
+    contact: 0.1
+    prior: 0.05
+    coord: 1.0
+    censored: 0.0
+  affinity:
+    affinity: 1.0
+    disto: 0.5
+    pocket: 0.3
+    triangle: 0.1
+    contact: 0.05
+    prior: 0.01
+    coord: 0.2
+    censored: 0.5
+  finetune:
+    affinity: 1.0
+    disto: 0.5
+    pocket: 0.3
+    triangle: 0.1
+    contact: 0.05
+    prior: 0.02
+    coord: 0.2
+    censored: 0.5

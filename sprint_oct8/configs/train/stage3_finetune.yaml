@@ -1,0 +1,9 @@
+# Stage 3: crystal fine-tune. Only structure-bearing Kd/Ki complexes, lower LR,
+# higher sample weight (Section 5.2 gives crystal-linked rows weight 1.0).
+_inherit: stage2_affinity
+
+stage: finetune
+epochs: 15
+lr: 5.0e-5
+patience: 4
+geometry_replay_frac: 1.0

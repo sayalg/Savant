@@ -1,0 +1,6 @@
+# ESM-C 300M. Cambrian Open License - commercial use permitted.
+#
+# Section 0.4.8: do NOT use ESM-C 600M or 6B unless the user confirms a
+# non-commercial context. 600M is non-commercial; 6B is API-only.
+mode: esmc_300m
+noise_std: 0.05
