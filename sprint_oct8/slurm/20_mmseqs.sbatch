@@ -73,6 +73,16 @@ run_mmseqs() {
     esac
 }
 
+# Idempotent. mmseqs refuses to overwrite its own output ("clu.dbtype exists
+# already!"), which is how the Wave 1 rerun failed. Clusters newer than the FASTA
+# are current and kept; stale ones are removed first. MMSEQS_FORCE=1 redoes them.
+if [ -s "$OUT/clusters.tsv" ] && [ "$OUT/clusters.tsv" -nt "$FASTA" ] && [ "${MMSEQS_FORCE:-0}" != "1" ]; then
+    echo "== clusters.tsv is newer than $FASTA - current, skipping (MMSEQS_FORCE=1 to redo) =="
+    exit 0
+fi
+rm -rf "$OUT"/db* "$OUT"/clu* "$OUT/tmp" "$OUT/clusters.tsv"
+mkdir -p "$OUT/tmp"
+
 echo "== clustering $(grep -c '^>' "$FASTA") sequences at ${ID} identity, ${COV} coverage =="
 run_mmseqs createdb "$FASTA" "$OUT/db"
 run_mmseqs cluster "$OUT/db" "$OUT/clu" "$OUT/tmp" \

@@ -36,6 +36,12 @@ sources:
     path: null                 # null -> the release under data/raw/papyrus
     quality: high
     keep_censored: true
+    # A Papyrus row is the MEAN over every measurement of a pair, so a
+    # ChEMBL-derived row cannot be value-matched against the per-measurement
+    # ChEMBL rows this project already pulls - it just enters the corpus twice.
+    # 73% of Papyrus++ Kd/Ki rows (184,195 of 250,903) are ChEMBL-only; what
+    # remains is mostly the Christmann2016 kinase panel, which ChEMBL lacks.
+    drop_chembl_only: true
 
   iuphar:
     loader: iuphar
@@ -74,6 +80,13 @@ sources:
     enabled: false
     path: merged_kd_ki.csv
     assume_type: null
+
+# Collapse construct variants of one target onto a single sequence (the longest
+# seen for that UniProt accession) BEFORE dedupe and aggregation. Without it the
+# same target enters as several "proteins" - Wave 1 reported 12,884 proteins over
+# 4,409 mmseqs clusters, median ONE ligand each, and only 556 of 2,266 test targets
+# had enough ligands for a per-target rho. Whole-cluster splits were unaffected.
+canonicalize_proteins: true
 
 # Section 5.2 filters
 max_sequence_length: 1022     # the ESM-2 window; longer sequences are cropped

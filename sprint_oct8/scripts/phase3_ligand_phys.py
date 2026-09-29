@@ -38,7 +38,7 @@ import pandas as pd  # noqa: E402
 
 from pfpl import conf, paths  # noqa: E402
 from pfpl.features import ligand_phys as LP  # noqa: E402
-from pfpl.features.cache import slurm_shard  # noqa: E402
+from pfpl.features.cache import check_stamp, slurm_shard  # noqa: E402
 
 OUT = paths.WORK / "ligand_phys"
 
@@ -166,6 +166,9 @@ def main() -> None:
     sid, nsh = (a.shard_id, a.n_shards) if a.shard_id is not None else slurm_shard()
     nsh = nsh or 1
     mine = lig.iloc[np.array_split(np.arange(len(lig)), nsh)[sid]]
+    ## Before the completeness check: a shard from a previous corpus is indexed by
+    ## ligand_idx values Phase 1 has since reassigned.
+    check_stamp(OUT, "ligand physics")
     final = OUT / f"shard_{sid:04d}.parquet"
     if final.exists() and "_site_dist" in pq_columns(final):
         log(f"shard {sid} already complete - skipping")

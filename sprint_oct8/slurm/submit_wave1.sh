@@ -121,15 +121,55 @@ else
     echo "== phase 1a: raw sources already acquired (ACQUIRE=force to redo) ==" >&2
 fi
 
-# Skipped when the corpus already exists and acquisition is not being re-run, so a
-# partial wave can be resumed without another 200 GB harmonisation. PHASE1=force
-# rebuilds it. Every stage below is idempotent: finished embedding shards and
-# completed ligand-physics shards are skipped, interrupted ones resume.
+# Skipped when the corpus already exists, was built by the CURRENT config, and
+# acquisition is not being re-run - so a partial wave resumes without another
+# 200 GB harmonisation. PHASE1=force rebuilds it regardless.
+#
+# The config-hash check matters: changing a corpus-shaping option (the dedupe, the
+# protein canonicalisation, a source filter) and re-running would otherwise train
+# new code on the old corpus, and every downstream cache would be stamped with a
+# corpus that no longer matches the config that supposedly produced it.
+corpus_current() {
+    [ -f "${PFPL_WORK}/pairs.parquet" ] || return 1
+    python3 - "${PFPL_ROOT}" "${PFPL_WORK}/corpus_meta.json" <<'PY'
+import json, pathlib, sys
+sys.path.insert(0, str(pathlib.Path(sys.argv[1]) / "src"))
+from pfpl import conf
+try:
+    built = json.loads(pathlib.Path(sys.argv[2]).read_text()).get("config_hash")
+except (OSError, ValueError):
+    sys.exit(1)
+now = conf.load().hash
+if built != now:
+    print(f"   corpus was built by config {built}, current config is {now}",
+          file=sys.stderr)
+sys.exit(0 if built == now else 1)
+PY
+}
 P1=""
-if [ -z "$ACQ" ] && [ -f "${PFPL_WORK}/pairs.parquet" ] && [ "${PHASE1:-auto}" != "force" ]; then
-    echo "== phase 1b: corpus exists (work/pairs.parquet); PHASE1=force to rebuild ==" >&2
+if [ -z "$ACQ" ] && [ "${PHASE1:-auto}" != "force" ] && corpus_current; then
+    echo "== phase 1b: corpus is current (work/pairs.parquet); PHASE1=force to rebuild ==" >&2
 else
     echo "== phase 1b: harmonise ==" >&2
+    # Phase 1 reassigns protein_idx/ligand_idx, so every cache indexed by them is
+    # about to be wrong. The jobs REFUSE a stale cache (features/cache.py
+    # check_stamp), which would fail the wave hours in; clear them now instead.
+    # NOT touched: work/data/raw (the downloads and PDBbind) and work/geometry,
+    # which is keyed by PDB id and independent of the corpus.
+    STALE=""
+    for p in "${PFPL_WORK}/cache" "${PFPL_WORK}/ligand_phys" \
+             "${PFPL_WORK}/ligand_dist" "${PFPL_WORK}/ligand_phys.parquet" \
+             "${PFPL_WORK}/mmseqs" "${PFPL_ROOT}"/splits/*.npz; do
+        [ -e "$p" ] && STALE="${STALE} ${p}"
+    done
+    if [ -n "$STALE" ]; then
+        if [ "$DRY" = "1" ]; then
+            echo "DRY: would remove stale caches:${STALE}" >&2
+        else
+            echo "   removing caches invalidated by the rebuild:${STALE}" >&2
+            rm -rf ${STALE}
+        fi
+    fi
     P1=$(sub "harmonise the Kd/Ki corpus" \
         ${ACQ:+--dependency=afterok:${ACQ} --kill-on-invalid-dep=yes} \
         --job-name=pfpl-phase1 "${PFPL_ROOT}/slurm/10_phase1.sbatch")

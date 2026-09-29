@@ -43,6 +43,8 @@ from pfpl.data import schema  # noqa: E402
 from pfpl.data.sources.pdbbind import complex_paths, find_index, parse_index  # noqa: E402
 from pfpl.data.standardize import sequence_hash  # noqa: E402
 from pfpl.features import geom_labels as G  # noqa: E402
+## No check_stamp here: geometry shards are keyed by PDB id, read straight from the
+## PDBbind index, so they do not depend on Phase 1's protein_idx/ligand_idx.
 from pfpl.features.cache import slurm_shard  # noqa: E402
 
 OUT = paths.WORK / "geometry"
@@ -181,17 +183,18 @@ def main() -> None:
                 "n_shards": len(shards),
                 "with_affinity_label": int(sum(L["has_affinity_label"] for L in labels)),
                 "contact_statistics": stats,
-                "note": "contact_prior_loss target should match "
-                        "mean_contacts_per_buried_atom"}
+                "note": "train/loop.py:measured_contact_target() reads "
+                        "mean_contacts_per_buried_atom from this file"}
         (OUT / "meta.json").write_text(json.dumps(meta, indent=1))
         pd.DataFrame(fails, columns=["pdb_id", "reason"]).to_csv(
             paths.REPORTS / "geometry_failures.csv", index=False)
         log(f"merged {len(labels):,} complexes ({len(fails):,} failed)")
         print(json.dumps(meta, indent=1))
         if stats:
-            print(f"\n  Set contact_prior_loss(target=...) to "
-                  f"{stats['mean_contacts_per_buried_atom']:.1f} - it is currently a "
-                  "constant in physics/energy.py and should come from this number.")
+            print(f"\n  contact_prior_loss target = "
+                  f"{stats['mean_contacts_per_buried_atom']:.2f} contacts per buried "
+                  "atom, read from this file by train/loop.py at training time\n"
+                  "  (it was a hard-coded 6.0, which is about twice this).")
         return
 
     rows = discover(Path(a.pdbbind) if a.pdbbind else None,

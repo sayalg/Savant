@@ -161,6 +161,13 @@ def main() -> None:
         log(f"{too_long:,} rows have sequences > {maxlen} aa; they will be cropped "
             f"to the PLM window and reported by length bin")
 
+    ## ---- one sequence per target -------------------------------------------
+    ## Before dedupe and aggregation, both of which key on sequence_hash: the same
+    ## target arriving as three constructs is three "proteins" otherwise.
+    if cfg.data.get("canonicalize_proteins", True):
+        log("canonicalising construct variants onto one sequence per accession")
+        raw = harmonize.canonicalize_proteins(raw)
+
     ## ---- dedupe and cross-type ---------------------------------------------
     log("cross-source dedupe")
     dedup = harmonize.dedupe_measurements(raw)

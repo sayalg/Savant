@@ -51,6 +51,7 @@ C_RELATION = "relation"
 C_QUALITY = "Quality"
 C_PCHEMBL = "pchembl_value_Mean"
 C_DOC = "all_doc_ids"
+C_SOURCE = "source"
 C_TYPE_KI, C_TYPE_KD = "type_Ki", "type_KD"
 ## Read ONLY to exclude mixed aggregates; never propagated.
 C_TYPE_EXCLUDED = ("type_IC50", "type_EC50", "type_other")
@@ -112,7 +113,16 @@ def inspect(path: str | None = None, n: int = 5000) -> None:
 @register("papyrus")
 def load(path: str | None = None, targets: str | None = None, quality: str = "high",
          keep_censored: bool = True, nrows: int | None = None,
-         chunksize: int = 500_000, **kw) -> pd.DataFrame:
+         chunksize: int = 500_000, drop_chembl_only: bool = True,
+         **kw) -> pd.DataFrame:
+    """drop_chembl_only: skip rows whose every `source` is ChEMBL.
+
+    A Papyrus row is the MEAN over all measurements of a pair, so a ChEMBL-derived
+    row cannot be matched value-for-value against the per-measurement ChEMBL rows
+    this project already pulls - it just enters the corpus a second time. Wave 1
+    did exactly that: 73% of Papyrus++ Kd/Ki rows (184k) are ChEMBL-only. What
+    Papyrus adds beyond ChEMBL (mainly the Christmann2016 kinase panel) is kept.
+    """
     ## Local files only. scripts/phase1a_acquire.py is the single place that
     ## touches the network, so a harmonisation job cannot stall on a download.
     p = Path(path) if path else _find(BIOACTIVITY_GLOB, "bioactivity table")
@@ -122,7 +132,8 @@ def load(path: str | None = None, targets: str | None = None, quality: str = "hi
     with _open_text(p) as fh:
         header = fh.readline().rstrip("\n").split("\t")
     want = [C_ACTIVITY, C_QUALITY, C_SMILES, C_INCHIKEY, C_TARGET, C_ACCESSION,
-            C_DOC, C_TYPE_KI, C_TYPE_KD, *C_TYPE_EXCLUDED, C_RELATION, C_PCHEMBL]
+            C_DOC, C_TYPE_KI, C_TYPE_KD, *C_TYPE_EXCLUDED, C_RELATION, C_PCHEMBL,
+            C_SOURCE]
     missing = [c for c in (C_SMILES, C_PCHEMBL, C_TARGET, C_TYPE_KI, C_TYPE_KD)
                if c not in header]
     if missing:
@@ -132,7 +143,7 @@ def load(path: str | None = None, targets: str | None = None, quality: str = "hi
             "and update the C_* constants in this module.")
     use = [c for c in want if c in header]
 
-    n_seen = n_ki = n_kd = n_both = n_mixed = 0
+    n_seen = n_ki = n_kd = n_both = n_mixed = n_chembl_only = 0
     parts = []
     with _open_text(p) as fh:
         for chunk in pd.read_csv(fh, sep="\t", usecols=use, nrows=nrows,
@@ -145,6 +156,12 @@ def load(path: str | None = None, targets: str | None = None, quality: str = "hi
                     other |= _flag(chunk[c])
             both = ki & kd
             keep = (ki ^ kd) & ~other
+            if drop_chembl_only and C_SOURCE in chunk:
+                chembl_only = chunk[C_SOURCE].fillna("").str.split(";").map(
+                    lambda xs: all(x.strip().lower().startswith("chembl") for x in xs)
+                ).to_numpy()
+                n_chembl_only += int((keep & chembl_only).sum())
+                keep &= ~chembl_only
             n_ki += int(ki.sum()); n_kd += int(kd.sum())
             n_both += int(both.sum()); n_mixed += int(((ki | kd) & other).sum())
             sub = chunk.loc[keep].drop(columns=[c for c in C_TYPE_EXCLUDED if c in chunk])
@@ -154,6 +171,9 @@ def load(path: str | None = None, targets: str | None = None, quality: str = "hi
     print(f"    {n_seen:,} rows read.  flagged Ki {n_ki:,}  Kd {n_kd:,}")
     print(f"    dropped: Ki+Kd aggregates {n_both:,};  Ki/Kd averaged with "
           f"IC50/EC50/other {n_mixed:,} (label would be contaminated)")
+    if drop_chembl_only:
+        print(f"    dropped {n_chembl_only:,} ChEMBL-only rows (already in the chembl "
+              "source at measurement level)")
 
     out = pd.DataFrame(index=d.index)
     out["type"] = d["type"]

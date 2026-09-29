@@ -163,6 +163,12 @@ def _report(all_res: dict) -> None:
          "On the previous corpus, ligand-only reached median per-target rho **+0.325**",
          "on 613 held-out protein clusters while the best 7,680-dimension ESM model",
          "reached **0.158**. Read the ligand_only row first.", ""]
+    ## The table must carry its own caveats: `target_mean` reads the TEST set's own
+    ## per-target means, so its Pearson is not a model result and a reader skimming
+    ## the table would otherwise take it for the number to beat.
+    L += ["`target_mean` is an ORACLE, not a model: it is given each test target's",
+          "own mean and is unavailable at inference. `const` is the RMSE floor.",
+          "Both are constant within a target, so neither has a per-target rho.", ""]
     for split, d in all_res.items():
         L += [f"## split: `{split}`", "",
               "| model | pearson | per-target rho | RMSE | RMSE const | n targets | EF@10 |",
@@ -170,11 +176,18 @@ def _report(all_res: dict) -> None:
         for k, r in d["reports"].items():
             def f(v, s="{:+.3f}"):
                 return "-" if v is None or not np.isfinite(v) else s.format(v)
-            L.append(f"| `{k}` | {f(r['pearson'])} | "
+            tag = {"target_mean": " *(oracle)*", "const": " *(floor)*",
+                   "ligand_only": " **(the floor to beat)**"}.get(k, "")
+            L.append(f"| `{k}`{tag} | {f(r['pearson'])} | "
                      f"{f(r['per_target_spearman_median'])} | "
                      f"{f(r['rmse'], '{:.3f}')} | {f(r['rmse_const'], '{:.3f}')} | "
                      f"{r['n_targets']} | {f(r['ef_at_10_median'], '{:.2f}')} |")
         L.append("")
+        for k, c in (d["shortcut_checks"] or {}).items():
+            if c.get("below_ligand_only"):
+                L += [f"> **`{k}` is BELOW the ligand-only floor** by "
+                      f"{-c['delta_pearson_vs_ligand_only']:.3f} Pearson. The protein "
+                      "features are hurting, not merely failing to help.", ""]
         if d["shortcut_checks"]:
             L += ["Shortcut check (Section 5.3.5):", "", "```json",
                   json.dumps(d["shortcut_checks"], indent=1), "```", ""]

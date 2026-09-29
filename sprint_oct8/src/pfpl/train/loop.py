@@ -23,6 +23,7 @@ Every job is checkpointed each epoch and resumes from `last.pt`, because Section
 """
 from __future__ import annotations
 
+import functools
 import json
 import math
 import time
@@ -51,6 +52,32 @@ class LossWeights:
     prior: float = 0.01         # annealed in `anneal_prior`
     coord: float = 0.5          # Variant B only
     censored: float = 0.5
+    ## None -> the value measured from THIS corpus's crystals, written into
+    ## work/geometry/meta.json by phase2_geometry. See measured_contact_target().
+    contact_target: float | None = None
+
+
+@functools.lru_cache(maxsize=4)
+def measured_contact_target(override: float | None = None) -> float:
+    """Contacts per buried ligand atom, measured from this corpus's own crystals.
+
+    `contact_prior_loss` shipped with a literature-ish default of 6.0. PDBbind+
+    2020R1 measures 3.07 (median 3, p90 6) - so the default pushed the model toward
+    roughly twice the real packing, i.e. exactly the over-attractive solution
+    Section 2.1 warns about, while looking like a physics prior.
+
+    phase2_geometry writes the number; this reads it, and falls back to the old
+    default only when no geometry has been built (where the term is unused anyway).
+    """
+    if override is not None:
+        return float(override)
+    from ..paths import WORK
+    p = WORK / "geometry" / "meta.json"
+    try:
+        v = json.loads(p.read_text())["contact_statistics"]["mean_contacts_per_buried_atom"]
+    except (OSError, KeyError, ValueError):
+        return 6.0
+    return float(v)
 
 
 def huber_hetero(pred, target, logvar, weight, delta: float = 1.0,
@@ -153,7 +180,8 @@ def compute_losses(out, batch, w: LossWeights, stage: str, step: int = 0,
                 out.P, batch["lig_dist"], out.site_mask, batch["lig_mask"])
         if w.contact > 0 and out.energy is not None:
             parts["contact"] = w.contact * contact_prior_loss(
-                out.energy.burial, batch["lig_mask"])
+                out.energy.burial, batch["lig_mask"],
+                target=measured_contact_target(w.contact_target))
 
     if w.prior > 0 and out.theta_i is not None:
         pw = anneal_prior(w.prior, step, total_steps)

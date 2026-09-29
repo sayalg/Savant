@@ -42,7 +42,7 @@ import numpy as np  # noqa: E402
 import pandas as pd  # noqa: E402
 
 from pfpl import conf, paths, preflight  # noqa: E402
-from pfpl.features.cache import content_hash, slurm_shard  # noqa: E402
+from pfpl.features.cache import check_stamp, content_hash, slurm_shard  # noqa: E402
 from pfpl.features.embed_esm import (MAX_LEN, MODELS, POCKET_EXTRA_DIM,  # noqa: E402
                                      Embedder, model_id, pocket_extra_features)
 
@@ -92,6 +92,9 @@ def run_shard(cfg, shard_id: int, n_shards: int, batch_tokens: int) -> None:
     prot = proteins()
     out = store_dir(cfg)
     out.mkdir(parents=True, exist_ok=True)
+    ## Before the "already present - skipping" check below, not after: a shard from
+    ## a previous corpus looks identical on disk and would be silently reused.
+    check_stamp(out, "per-residue embeddings")
     sp = out / f"shard_{shard_id:04d}.npz"
     if sp.exists() and sp.stat().st_size > 0:
         log(f"shard {shard_id} already present - skipping (idempotent by design)")

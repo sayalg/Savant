@@ -245,3 +245,39 @@ def test_shard_write_is_atomic(tmp_path):
     c.write_shard(0, index=np.arange(2), value=np.zeros(2, np.float32))
     assert c.done(0)
     assert not list(c.dir.glob("*.tmp.npz")), "a temp file survived the rename"
+
+
+def test_a_cache_from_a_different_corpus_is_refused(tmp_path, monkeypatch):
+    """Shards are indexed by protein_idx/ligand_idx, which Phase 1 reassigns on
+    every rebuild. A stale shard looks identical on disk and the resume logic would
+    skip it as "already present", pairing embeddings with the WRONG protein."""
+    import numpy as np
+    import pandas as pd
+    import pfpl.paths as P
+    from pfpl.features import cache as C
+
+    monkeypatch.setattr(P, "WORK", tmp_path)
+
+    def corpus(n_prot):
+        pd.DataFrame({"protein_idx": np.arange(n_prot),
+                      "sequence_hash": [f"h{i}" for i in range(n_prot)]}
+                     ).to_parquet(tmp_path / "proteins.parquet")
+        pd.DataFrame({"protein_idx": np.arange(20) % n_prot,
+                      "ligand_idx": np.arange(20)}).to_parquet(tmp_path / "pairs.parquet")
+
+    d = tmp_path / "cache" / "plm_x"
+    corpus(10)
+    first = C.corpus_fingerprint()
+    assert C.check_stamp(d, "embeddings") is True          # stamps it
+    assert C.check_stamp(d, "embeddings") is True          # same corpus, still fine
+
+    corpus(9)
+    assert C.corpus_fingerprint() != first
+    with pytest.raises(SystemExit) as e:
+        C.check_stamp(d, "per-residue embeddings")
+    assert "rm -rf" in str(e.value), "the refusal must say how to fix it"
+    assert C.check_stamp(d, "x", strict=False) is False
+
+    corpus(10)
+    assert C.check_stamp(d, "embeddings") is True, \
+        "an identical rebuild must REUSE its caches, not force a recompute"

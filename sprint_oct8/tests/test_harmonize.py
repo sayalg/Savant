@@ -105,6 +105,116 @@ def test_dedupe_exempts_rows_with_no_document_id():
     assert len(H.dedupe_measurements(frame(rows), verbose=False)) == 4
 
 
+def test_doc_ids_are_normalised_to_one_vocabulary():
+    """Each source spells the same paper differently. Wave 1 keyed on the raw
+    string, so no key matched across sources and dedupe removed NOTHING."""
+    for raw in ("19231178", "19231178.0", "PMID:19231178", "PMID: 19231178",
+                "PMID:19231178;PMID:22168767"):
+        assert H.normalize_doc_id(raw) == "PMID:19231178", raw
+    assert H.normalize_doc_id("CHEMBL1134862") == "CHEMBL1134862"
+    assert H.normalize_doc_id("PDBBIND:1a4k") == "PDBBIND:1A4K"
+    for empty in (None, np.nan, "", "  ", "nan", "<NA>"):
+        assert H.normalize_doc_id(empty) == ""
+
+
+def test_dedupe_matches_across_the_real_id_spellings():
+    rows = [
+        dict(source_db="chembl", doc_id="CHEMBL1134862", uniprot="P1",
+             sequence_hash="h1", inchikey_full="A-B-N", type="Ki", pK=8.0,
+             relation="="),
+        dict(source_db="bindingdb", doc_id="19231178.0", uniprot="P1",
+             sequence_hash="h1", inchikey_full="A-B-N", type="Ki", pK=8.0,
+             relation="="),
+        dict(source_db="papyrus", doc_id="PMID:19231178;PMID:22168767", uniprot="P1",
+             sequence_hash="h1", inchikey_full="A-B-N", type="Ki", pK=8.0,
+             relation="="),
+        dict(source_db="iuphar", doc_id="PMID:19231178", uniprot="P1",
+             sequence_hash="h1", inchikey_full="A-B-N", type="Ki", pK=8.0,
+             relation="="),
+    ]
+    out = H.dedupe_measurements(frame(rows), verbose=False)
+    assert len(out) == 1, "one measurement re-curated four times is still one"
+    assert out.source_db.iat[0] == "chembl"
+
+
+def test_dedupe_never_merges_two_rows_from_the_same_source():
+    """Two rows from ONE source are that source's own replicates. Merging them
+    would destroy the replicate count the noise ceiling is measured from."""
+    rows = [dict(source_db="chembl", doc_id="PMID:1", uniprot="P1",
+                 sequence_hash="h1", inchikey_full="A-B-N", type="Ki", pK=8.0,
+                 relation="=")] * 3
+    assert len(H.dedupe_measurements(frame(rows), verbose=False)) == 3
+
+
+def test_dedupe_catches_a_copy_with_no_shared_document_id():
+    """ChEMBL document ids carry no PubMed id, so BindingDB's imported-from-ChEMBL
+    rows can only be matched on the VALUE."""
+    rows = [
+        dict(source_db="chembl", doc_id="CHEMBL111", uniprot="P1",
+             sequence_hash="h1", inchikey_full="A-B-N", type="Ki", pK=8.0,
+             relation="="),
+        dict(source_db="bindingdb", doc_id=None, uniprot="P1", sequence_hash="h1",
+             inchikey_full="A-B-N", type="Ki", pK=8.0, relation="="),
+    ]
+    out = H.dedupe_measurements(frame(rows), verbose=False)
+    assert len(out) == 1 and out.source_db.iat[0] == "chembl"
+    ## but a different RELATION is a different measurement
+    rows[1]["relation"] = ">"
+    assert len(H.dedupe_measurements(frame(rows), verbose=False)) == 2
+
+
+def test_canonicalize_proteins_collapses_constructs_of_one_accession():
+    """One target entering as three constructs was three "proteins" in Wave 1."""
+    full = "MKTAYIAKQRQISFVKSHFSRQLEERLGLIEVQ"
+    rows = [
+        dict(source_db="chembl", uniprot="P00533", sequence=full,
+             sequence_hash=sequence_hash(full), inchikey_full="A-B-N", type="Ki",
+             pK=8.0, relation="=", doc_id="PMID:1"),
+        ## crystallised construct: the same protein, 8 residues short
+        dict(source_db="bindingdb", uniprot="P00533", sequence=full[:-8],
+             sequence_hash=sequence_hash(full[:-8]), inchikey_full="C-D-N",
+             type="Ki", pK=7.0, relation="=", doc_id="PMID:2"),
+        ## isoform suffix and whitespace are the same entry
+        dict(source_db="pdbbind", uniprot=" p00533-2 ", sequence=full[:-4],
+             sequence_hash=sequence_hash(full[:-4]), inchikey_full="E-F-N",
+             type="Kd", pK=9.0, relation="=", doc_id="PDBBIND:1a4k"),
+        ## a genuinely different target must NOT be touched
+        dict(source_db="chembl", uniprot="Q99999", sequence="MGGKWSKSSVIGWPTVRER",
+             sequence_hash=sequence_hash("MGGKWSKSSVIGWPTVRER"),
+             inchikey_full="G-H-N", type="Ki", pK=6.0, relation="=",
+             doc_id="PMID:3"),
+    ]
+    out = H.canonicalize_proteins(frame(rows), verbose=False)
+    assert out.sequence_hash.nunique() == 2, "three constructs are one protein"
+    p533 = out[out.uniprot.str.strip().str.upper().str.startswith("P00533")]
+    assert (p533.sequence == full).all(), "the LONGEST construct wins"
+    assert (p533.sequence_hash == sequence_hash(full)).all(), "hash must follow"
+    assert out.sequence_hash.iat[3] == sequence_hash("MGGKWSKSSVIGWPTVRER")
+
+
+def test_uniprot_accession_pattern_accepts_the_real_ones():
+    """A hand-rolled `[A-NR-Z0-9]...` excludes O, P and Q - so P00533, the single
+    most common target in this corpus, silently failed to canonicalise."""
+    import re
+    pat = re.compile(H.UNIPROT_ACC)
+    for a in ("P00533", "Q99999", "O95180", "A0A123", "P0DTC2", "A0A0C5B5G6"):
+        assert pat.fullmatch(a), a
+    for bad in ("", "NOTANACC", "12345", "P0", "p00533"):
+        assert not pat.fullmatch(bad), bad
+
+
+def test_canonicalize_leaves_rows_without_an_accession_alone():
+    a, b = "MKTAYIAKQRQ", "MKTAYIAKQ"
+    rows = [dict(source_db="local", uniprot=None, sequence=a,
+                 sequence_hash=sequence_hash(a), inchikey_full="A-B-N", type="Ki",
+                 pK=8.0, relation="=", doc_id=None),
+            dict(source_db="local", uniprot="", sequence=b,
+                 sequence_hash=sequence_hash(b), inchikey_full="C-D-N", type="Ki",
+                 pK=7.0, relation="=", doc_id=None)]
+    out = H.canonicalize_proteins(frame(rows), verbose=False)
+    assert list(out.sequence) == [a, b]
+
+
 # ----------------------------------------------------------------- aggregate
 
 def test_aggregate_takes_the_median_and_keeps_the_spread():
@@ -247,3 +357,45 @@ def test_enrichment_matches_a_hand_computation():
     ef = M.enrichment(y, perfect, k=10, q=0.9)
     assert ef["ef"] == pytest.approx(10.0)
     assert ef["recall"] == pytest.approx(1.0)
+
+
+def test_phase1_path_collapses_a_realistic_multi_source_overlap():
+    """The Wave 1 failure, end to end: one target and one measurement arriving from
+    four sources in four spellings produced 4 measurements and 3 "proteins"."""
+    full = "MKTAYIAKQRQISFVKSHFSRQLEERLGLIEVQAPILSRVGDGTQDNLSGAEKAVQVKVKALPDAQ"
+    construct, iso = full[:-12], full[:-6]
+    rows = [
+        ## --- one Ki, curated by four sources, three sequence variants -----------
+        dict(source_db="chembl", doc_id="CHEMBL1134862", uniprot="P00533",
+             sequence=full, inchikey_full="AAA-BBB-N", type="Ki", pK=8.30,
+             relation="="),
+        dict(source_db="bindingdb", doc_id="19231178.0", uniprot="P00533",
+             sequence=construct, inchikey_full="AAA-BBB-N", type="Ki", pK=8.30,
+             relation="="),
+        dict(source_db="papyrus", doc_id="PMID:19231178;PMID:22168767",
+             uniprot="P00533", sequence=full, inchikey_full="AAA-BBB-N", type="Ki",
+             pK=8.302, relation="="),
+        dict(source_db="pdbbind", doc_id="PDBBIND:1m17", uniprot="P00533-2",
+             sequence=iso, inchikey_full="AAA-BBB-N", type="Ki", pK=8.30,
+             relation="="),
+        ## --- a second, genuinely independent measurement of the same pair -------
+        dict(source_db="chembl", doc_id="CHEMBL999", uniprot="P00533",
+             sequence=full, inchikey_full="AAA-BBB-N", type="Ki", pK=7.10,
+             relation="="),
+    ]
+    df = frame(rows)
+    df["sequence_hash"] = [sequence_hash(s) for s in df["sequence"]]
+
+    d = H.canonicalize_proteins(df, verbose=False)
+    assert d.sequence_hash.nunique() == 1, "one target, not three"
+
+    d = H.dedupe_measurements(d, verbose=False)
+    assert len(d) == 2, "four curations of one measurement, plus one real replicate"
+    assert d.source_db.iat[0] == "pdbbind", "structure-linked source wins the tie"
+    assert set(np.round(d.pK, 2)) == {8.30, 7.10}
+
+    pairs = H.aggregate_pairs(d, verbose=False)
+    assert len(pairs) == 1
+    assert pairs.n_measurements.iat[0] == 2, \
+        "the replicate count must reflect real replicates, not re-curated copies"
+    assert np.isclose(pairs.pK.iat[0], 7.70)

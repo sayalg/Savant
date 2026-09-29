@@ -22,43 +22,159 @@ otherwise an assumption carried through the whole plan.
 """
 from __future__ import annotations
 
+import re
+
 import numpy as np
 import pandas as pd
 
 from . import schema as S
 
+## Preference when a duplicate IS found: structure-linked first, then the sources
+## that carry per-measurement rows, then the aggregating ones.
+SOURCE_PREF = {"pdbbind": 0, "chembl": 1, "iuphar": 2, "bindingdb": 3, "papyrus": 4}
+
+_PMID = re.compile(r"(?:PMID[:\s]*)?\b(\d{5,9})(?:\.0)?\b", re.I)
+
+## UniProt's own accession grammar (www.uniprot.org/help/accession_numbers).
+## Worth copying exactly: a hand-rolled "[A-NR-Z0-9][A-Z0-9]{5,9}" excludes O, P
+## and Q, which silently drops P00533 - i.e. most of the corpus.
+UNIPROT_ACC = r"[OPQ][0-9][A-Z0-9]{3}[0-9]|[A-NR-Z][0-9]([A-Z][A-Z0-9]{2}[0-9]){1,2}"
+
+
+def normalize_doc_id(x) -> str:
+    """One document-id vocabulary across sources: `PMID:<n>` where a PubMed id is
+    recoverable, the source's own id otherwise.
+
+    Wave 1 keyed dedupe on the raw strings and every source spells them
+    differently - ChEMBL `CHEMBL1134862`, BindingDB `19231178` (often `19231178.0`
+    after a float round-trip), Papyrus `PMID:19231178;PMID:...`, IUPHAR
+    `PMID:19231178` - so no key ever matched across sources and the dedupe step
+    removed nothing at all.
+    """
+    if x is None or (isinstance(x, float) and np.isnan(x)):
+        return ""
+    s = str(x).strip()
+    if not s or s.lower() in ("nan", "none", "<na>"):
+        return ""
+    if s.upper().startswith(("CHEMBL", "PDBBIND:")):
+        return s.upper()
+    m = _PMID.search(s)
+    return f"PMID:{m.group(1)}" if m else s
+
+
+def normalize_accession(s: pd.Series) -> pd.Series:
+    """`  p00533-2 `, `P00533; Q9Y6K9` -> `P00533`. Non-accessions -> "".
+
+    Isoform suffixes and multi-accession lists have to be stripped in ONE place:
+    the dedupe key and the protein canonicalisation must agree, or PDBbind's
+    `P00533-2` is a different protein from ChEMBL's `P00533` in one step and the
+    same protein in the other.
+    """
+    acc = (s.fillna("").astype(str).str.strip().str.upper()
+            .str.split(r"[;,|\s]", regex=True).str[0].str.split("-").str[0])
+    return acc.where(acc.str.fullmatch(UNIPROT_ACC, na=False), "")
+
+
+def _protein_key(d: pd.DataFrame) -> pd.Series:
+    prot = normalize_accession(d["uniprot"])
+    return prot.where(prot != "", d["sequence_hash"].fillna("").astype(str))
+
 
 def dedupe_measurements(df: pd.DataFrame, verbose: bool = True) -> pd.DataFrame:
     """Drop rows that are the same measurement re-curated by a second source.
 
-    Keyed on (doc_id, uniprot|sequence_hash, inchikey_full, type, rounded value).
-    Rounding to 2 decimal places in pK absorbs unit-conversion jitter between
-    sources without merging genuinely different measurements (0.01 pK is 2% in
-    concentration; inter-lab scatter is ~0.5 pK).
+    Two passes, both CROSS-source only - two rows from the SAME source are that
+    source's own replicates and are never merged here:
+
+    1. document match: (normalised doc_id, protein, InChIKey, type, pK to 0.01).
+    2. value match: (protein, InChIKey, type, relation, pK to 0.01) present in more
+       than one source -> keep the most-preferred source's row. ChEMBL document ids
+       carry no PubMed id to align on, so this is what catches BindingDB's
+       imported-from-ChEMBL copies. Two independent labs agreeing to 0.01 pK on the
+       same pair is rare; when it happens the pair's median label is unchanged and
+       only a replicate count is lost.
+
+    Rounding to 2 decimals in pK absorbs unit-conversion jitter between sources
+    (0.01 pK is 2% in concentration; inter-lab scatter is ~0.5 pK).
     """
     d = df.copy()
-    prot = d["uniprot"].fillna("").astype(str)
-    prot = prot.where(prot != "", d["sequence_hash"].fillna("").astype(str))
-    key = pd.Series(list(zip(
-        d["doc_id"].fillna("").astype(str), prot,
-        d["inchikey_full"].fillna("").astype(str), d["type"].astype(str),
-        np.round(pd.to_numeric(d["pK"], errors="coerce"), 2))), index=d.index)
-    ## Rows with no document id cannot be shown to be duplicates of each other, so
-    ## they are exempt - dropping them would silently delete whole sources.
-    has_doc = d["doc_id"].notna() & (d["doc_id"].astype(str).str.len() > 0)
-    ## Source preference when a duplicate IS found: structure-linked first.
-    order = {"pdbbind": 0, "chembl": 1, "papyrus": 2, "bindingdb": 3}
-    d["_pref"] = d["source_db"].map(order).fillna(9)
-    d["_key"] = key
-    dup = has_doc & d.duplicated(subset=["_key"], keep=False)
-    keep = ~dup | (d.sort_values("_pref").groupby("_key", sort=False).cumcount() == 0) \
-        .reindex(d.index).fillna(True)
-    kept = d[keep].drop(columns=["_pref", "_key"])
+    n0 = len(d)
+    d["doc_id"] = [normalize_doc_id(x) for x in d["doc_id"]]
+    d["_pref"] = d["source_db"].map(SOURCE_PREF).fillna(9)
+    pk = np.round(pd.to_numeric(d["pK"], errors="coerce"), 2).astype(str)
+    ik = d["inchikey_full"].fillna("").astype(str)
+    typ = d["type"].astype(str)
+    rel = d["relation"].fillna("=").astype(str)
+    prot = _protein_key(d)
+
+    ## Sort by preference so `keep="first"` keeps the preferred source's copy.
+    d["_key"] = d["doc_id"] + "|" + prot + "|" + ik + "|" + typ + "|" + pk
+    d["_vkey"] = prot + "|" + ik + "|" + typ + "|" + rel + "|" + pk
+    d = d.sort_values("_pref", kind="stable")
+
+    ## ---- pass 1: same document, different source ------------------------------
+    ## A row with no document id cannot be shown to be a duplicate this way; pass 2
+    ## still sees it.
+    multi = d.groupby("_key")["source_db"].transform("nunique") > 1
+    dup1 = (d["doc_id"] != "") & multi & d.duplicated("_key", keep="first")
+    d = d[~dup1]
+    n1 = len(d)
+
+    ## ---- pass 2: same value, different source ---------------------------------
+    dup2 = d["_pref"] > d.groupby("_vkey")["_pref"].transform("min")
+    kept = d[~dup2].drop(columns=["_pref", "_key", "_vkey"]).sort_index()
+
     if verbose:
-        print(f"  cross-source dedupe: {len(d):,} -> {len(kept):,} "
-              f"({len(d) - len(kept):,} duplicate measurements removed)")
+        print(f"  cross-source dedupe: {n0:,} -> {len(kept):,}  "
+              f"(same document {n0 - n1:,}; same value from a less-preferred source "
+              f"{n1 - len(kept):,})")
         print(f"    by source: {kept['source_db'].value_counts().to_dict()}")
     return kept
+
+
+def canonicalize_proteins(df: pd.DataFrame, verbose: bool = True) -> pd.DataFrame:
+    """Collapse construct variants of one target onto a single sequence.
+
+    Wave 1 identified a protein by its exact sequence, so one target entered as
+    several "proteins" - ChEMBL's canonical UniProt sequence, BindingDB's
+    crystallised construct, PDBbind's SEQRES - and the corpus reported 12,884
+    proteins over only 4,409 mmseqs clusters with a median of ONE ligand each.
+    Whole-cluster splits were unaffected (mmseqs put the copies together), but
+    per-target metrics were computed over fragments of the same target: only 556
+    of 2,266 test targets had enough ligands to score.
+
+    Within one UniProt accession, every row takes the LONGEST sequence seen for
+    that accession - the construct closest to the full protein, and the one whose
+    PLM embedding covers the most residues. Rows with no accession are untouched.
+    """
+    d = df.copy()
+    acc = normalize_accession(d["uniprot"])
+    has = acc != ""
+    if not has.any():
+        return d
+    d["_acc"] = acc
+    n_before = d.loc[has, "sequence_hash"].nunique()
+
+    sub = d[has]
+    longest = (sub.assign(_len=sub["sequence"].str.len())
+                  .sort_values("_len", ascending=False)
+                  .drop_duplicates("_acc")
+                  .set_index("_acc")["sequence"])
+    new_seq = d["_acc"].map(longest)
+    changed = has & new_seq.notna() & (new_seq != d["sequence"])
+    d.loc[changed, "sequence"] = new_seq[changed]
+
+    from .standardize import sequence_hash
+    if changed.any():
+        d.loc[changed, "sequence_hash"] = [sequence_hash(s) for s in
+                                           d.loc[changed, "sequence"]]
+    n_after = d.loc[has, "sequence_hash"].nunique()
+    d = d.drop(columns=["_acc"])
+    if verbose:
+        print(f"  protein canonicalisation: {n_before:,} -> {n_after:,} distinct "
+              f"sequences over {int(has.sum()):,} rows with a UniProt accession "
+              f"({int(changed.sum()):,} rows re-pointed to the longest construct)")
+    return d
 
 
 def cross_type_table(df: pd.DataFrame) -> pd.DataFrame:

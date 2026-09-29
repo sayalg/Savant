@@ -76,20 +76,30 @@ export PFPL_LOGS="${PFPL_LOGS:-${PFPL_ROOT}/logs}"
 # embedding extraction, and an unredirected TMPDIR is how an xtb shard silently
 # loses its scratch files mid-array.
 #
-# `:=` throughout, so a value you exported yourself always wins.
-# src/pfpl/paths.py:contain() applies the identical map on the Python side, and
-# `python -m pfpl.paths` exits non-zero if anything still points outside the root.
-: "${HF_HOME:=${PFPL_WORK}/hf}"
-: "${HUGGINGFACE_HUB_CACHE:=${PFPL_WORK}/hf/hub}"
-: "${TORCH_HOME:=${PFPL_WORK}/torch}"
-: "${XDG_CACHE_HOME:=${PFPL_WORK}/xdg}"
-: "${MPLCONFIGDIR:=${PFPL_WORK}/mpl}"
-: "${TRITON_CACHE_DIR:=${PFPL_WORK}/triton}"
-: "${CUDA_CACHE_PATH:=${PFPL_WORK}/nv}"
-: "${NUMBA_CACHE_DIR:=${PFPL_WORK}/numba}"
-: "${WANDB_DIR:=${PFPL_WORK}/wandb}"
-: "${WANDB_CACHE_DIR:=${PFPL_WORK}/wandb/cache}"
-: "${TMPDIR:=${PFPL_WORK}/tmp}"
+# RECLAIM, not `:=`. Slurm on this cluster exports TMPDIR=/tmp into every job, so
+# `:=` kept /tmp and every Wave 1 log printed `TMPDIR =/tmp`. The rule now matches
+# src/pfpl/paths.py:contain() exactly: a value already inside the root is kept,
+# anything outside it is replaced, and PFPL_ALLOW_EXTERNAL=VAR1,VAR2 opts a
+# variable out (e.g. a read-only site-wide HF_HOME).
+_pfpl_contain() {  # _pfpl_contain VAR default
+    local var="$1" def="$2" cur="${!1:-}"
+    case ",${PFPL_ALLOW_EXTERNAL:-}," in *",${var},"*) [ -n "$cur" ] && return ;; esac
+    case "$cur" in "${PFPL_ROOT}"/*|"${PFPL_ROOT}") return ;; esac
+    printf -v "$var" '%s' "$def"
+}
+if [ "${PFPL_NO_CONTAIN:-0}" != "1" ]; then
+    _pfpl_contain HF_HOME               "${PFPL_WORK}/hf"
+    _pfpl_contain HUGGINGFACE_HUB_CACHE "${PFPL_WORK}/hf/hub"
+    _pfpl_contain TORCH_HOME            "${PFPL_WORK}/torch"
+    _pfpl_contain XDG_CACHE_HOME        "${PFPL_WORK}/xdg"
+    _pfpl_contain MPLCONFIGDIR          "${PFPL_WORK}/mpl"
+    _pfpl_contain TRITON_CACHE_DIR      "${PFPL_WORK}/triton"
+    _pfpl_contain CUDA_CACHE_PATH       "${PFPL_WORK}/nv"
+    _pfpl_contain NUMBA_CACHE_DIR       "${PFPL_WORK}/numba"
+    _pfpl_contain WANDB_DIR             "${PFPL_WORK}/wandb"
+    _pfpl_contain WANDB_CACHE_DIR       "${PFPL_WORK}/wandb/cache"
+    _pfpl_contain TMPDIR                "${PFPL_WORK}/tmp"
+fi
 TMP="${TMPDIR}"; TEMP="${TMPDIR}"
 export HF_HOME HUGGINGFACE_HUB_CACHE TORCH_HOME XDG_CACHE_HOME MPLCONFIGDIR
 export TRITON_CACHE_DIR CUDA_CACHE_PATH NUMBA_CACHE_DIR WANDB_DIR WANDB_CACHE_DIR

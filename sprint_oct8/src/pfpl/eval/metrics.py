@@ -314,12 +314,22 @@ def shortcut_flag(model: Report, ligand_only: Report,
     a, b = model.pearson, ligand_only.pearson
     if not (np.isfinite(a) and np.isfinite(b)):
         return {"shortcut": None, "note": "a Pearson is undefined"}
+    ## Three outcomes, not two. Wave 1 reported a model 0.147 BELOW ligand-only with
+    ## the note "ligand-only is within 0.02 Pearson of the model", which reads as a
+    ## near-tie; the model was simply worse, and that is a different finding.
+    if a < b:
+        note = (f"the model is BELOW the ligand-only floor by {b - a:.3f} Pearson: "
+                "the protein features are hurting, not merely failing to help")
+    elif a - b < margin:
+        note = (f"ligand-only is within {margin} Pearson of the model: this split has "
+                "a ligand shortcut and needs a harder variant (Section 5.3.5)")
+    else:
+        note = "model is meaningfully above the ligand-only floor"
     return {
         "shortcut": bool(a - b < margin),
+        "below_ligand_only": bool(a < b),
         "delta_pearson_vs_ligand_only": float(a - b),
-        "note": (f"ligand-only is within {margin} Pearson of the model: this split has a "
-                 "ligand shortcut and needs a harder variant (Section 5.3.5)"
-                 if a - b < margin else "model is meaningfully above the ligand-only floor"),
+        "note": note,
     }
 
 

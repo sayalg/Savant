@@ -34,6 +34,71 @@ def content_hash(*parts, length: int = 12) -> str:
     return h.hexdigest()[:length]
 
 
+def corpus_fingerprint() -> str:
+    """Identifies the corpus a cache was built against.
+
+    Every sharded cache is indexed by `protein_idx` / `ligand_idx`, which
+    phase1_harmonize assigns with `np.arange` over whatever rows survive. Rebuild
+    the corpus and index 5,012 is a different protein - but the shard files look
+    exactly the same, and the resume logic skips them as "already present". That is
+    a silent misalignment of every embedding with the wrong protein, and nothing
+    downstream would raise.
+
+    Hashing the id columns rather than the file bytes means a re-run that produces
+    the same corpus still reuses its caches.
+    """
+    import pandas as pd
+
+    from ..paths import WORK
+    parts = []
+    for name, cols in (("proteins.parquet", ["protein_idx", "sequence_hash"]),
+                       ("pairs.parquet", ["protein_idx", "ligand_idx"])):
+        p = WORK / name
+        if not p.exists():
+            return "no-corpus"
+        df = pd.read_parquet(p, columns=cols)
+        h = hashlib.sha256()
+        for c in cols:
+            h.update(np.ascontiguousarray(df[c].to_numpy(dtype="U64" if df[c].dtype ==
+                     object else None)).tobytes())
+        parts.append(f"{len(df)}:{h.hexdigest()[:12]}")
+    return content_hash(parts)
+
+
+def stamp_path(d) -> Path:
+    return Path(d) / ".corpus"
+
+
+def check_stamp(d, what: str, strict: bool = True) -> bool:
+    """True if `d` was built against the current corpus. Writes the stamp if absent.
+
+    `strict` (the default) turns a mismatch into a hard stop naming the directory to
+    delete, because the failure it prevents is invisible.
+    """
+    d = Path(d)
+    fp = corpus_fingerprint()
+    if fp == "no-corpus":
+        return True
+    d.mkdir(parents=True, exist_ok=True)
+    sp = stamp_path(d)
+    old = sp.read_text().strip() if sp.exists() else ""
+    if not old:
+        sp.write_text(fp)
+        return True
+    if old == fp:
+        return True
+    msg = (f"\n{'!' * 78}\nSTALE CACHE: {d}\n"
+           f"  was built against corpus {old}, but the current corpus is {fp}.\n"
+           f"  Its shards are indexed by protein_idx/ligand_idx, which Phase 1 has\n"
+           f"  since reassigned - reusing them would pair {what} with the WRONG\n"
+           f"  protein or ligand, silently.\n\n  Delete it and re-run:\n"
+           f"      rm -rf {d}\n{'!' * 78}")
+    if strict:
+        raise SystemExit(msg)
+    print(msg)
+    return False
+
+
 def shard_range(n_items: int, shard_id: int, n_shards: int) -> np.ndarray:
     """Contiguous slices: neighbouring sequences have similar lengths after sorting,
     so contiguous shards pad less than strided ones."""
