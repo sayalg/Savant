@@ -25,6 +25,15 @@ COV="${MMSEQS_COV:-0.50}"
 [ -f "$FASTA" ] || { echo "missing $FASTA - run scripts/phase1_harmonize.py first" >&2; exit 1; }
 mkdir -p "$OUT/tmp"
 
+# Dead FUSE rootfs directories left under the contained TMPDIR by the runs that
+# failed before SINGULARITY_TMPDIR was pointed at node-local scratch. Best effort:
+# a stale mount point can refuse to unlink, which is not a reason to fail the job.
+for d in "${PFPL_WORK}"/tmp/rootfs-*; do
+    [ -e "$d" ] || continue
+    fusermount3 -u "$d/root" 2>/dev/null || fusermount -u "$d/root" 2>/dev/null || true
+    rm -rf "$d" 2>/dev/null || echo "  (left behind: $d)" >&2
+done
+
 # Where mmseqs comes from, in order: MMSEQS_BIN, mmseqs on PATH, then the colabfold
 # image. The first image below is the confirmed one on this cluster (2026-09-25);
 # /apps/pkg/colabfold/colabfold.sif never existed. The rest are fallbacks.
@@ -68,6 +77,9 @@ run_mmseqs() {
         path) mmseqs "$@" ;;
         # env -u LD_PRELOAD: the libstdc++ redirect in the prelude is for the conda
         # env on the host and must not follow us into the container.
+        # SINGULARITY_TMPDIR/APPTAINER_TMPDIR (set in _prelude.sh) keep the FUSE
+        # rootfs on node-local disk; on /scratch fusermount3 cannot unmount it and
+        # the container fails to start.
         sif)  env -u LD_PRELOAD "$SING" exec --bind "${PFPL_WORK}:${PFPL_WORK}" \
                   "$SIF" mmseqs "$@" ;;
     esac

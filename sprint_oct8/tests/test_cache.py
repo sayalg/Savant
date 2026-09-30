@@ -7,6 +7,7 @@ checkable, or it decays the first time someone adds a relative `open()`.
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -281,3 +282,40 @@ def test_a_cache_from_a_different_corpus_is_refused(tmp_path, monkeypatch):
     corpus(10)
     assert C.check_stamp(d, "embeddings") is True, \
         "an identical rebuild must REUSE its caches, not force a recompute"
+
+
+def test_prelude_keeps_the_container_rootfs_off_the_shared_filesystem(tmp_path):
+    """Containing TMPDIR broke the mmseqs job: Singularity unpacks the SIF into a
+    FUSE rootfs under TMPDIR, and on /scratch fusermount3 fails with "Permission
+    denied" on both mount and cleanup, so the container never starts.
+
+    TMPDIR must stay contained (xtb and every Python tempfile write there) while
+    SINGULARITY_TMPDIR/APPTAINER_TMPDIR point at node-local disk.
+    """
+    bash = shutil.which("bash")
+    if not bash:
+        pytest.skip("no bash available")
+    ## A throwaway root, so the prelude's own containment guard passes and the real
+    ## work/ is not littered with cache directories.
+    root = tmp_path / "root"
+    (root / "slurm").mkdir(parents=True)
+    shutil.copy(ROOT / "slurm" / "_prelude.sh", root / "slurm")
+    shutil.copytree(ROOT / "src", root / "src")
+    probe = ('source "$PFPL_ROOT/slurm/_prelude.sh" >/dev/null 2>&1; '
+             'echo "$TMPDIR"; echo "$SINGULARITY_TMPDIR"; echo "$APPTAINER_TMPDIR"')
+    out = subprocess.run(
+        [bash, "-c", probe], capture_output=True, text=True,
+        ## The guard is covered by the containment tests above; skipping it here
+        ## keeps this test about the env-var relationship, and avoids the Windows
+        ## PYTHONPATH separator making the guard import the real package.
+        env={**os.environ, "PFPL_ROOT": str(root), "TMPDIR": "/tmp",
+             "SLURM_JOB_ID": "12345", "PFPL_WORK": "", "PFPL_ALLOW_EXTERNAL": "",
+             "PFPL_SKIP_CONTAIN_CHECK": "1"})
+    assert out.returncode == 0, out.stdout + out.stderr
+    tmpdir, sing, appt = out.stdout.split()[:3]
+    assert Path(tmpdir).as_posix().startswith(root.as_posix()), \
+        f"TMPDIR must stay contained under the root, got {tmpdir!r}"
+    for name, v in (("SINGULARITY_TMPDIR", sing), ("APPTAINER_TMPDIR", appt)):
+        assert v and not Path(v).as_posix().startswith(root.as_posix()), \
+            f"{name}={v!r} is under the shared root; FUSE cannot unmount there"
+    assert sing == appt

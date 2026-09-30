@@ -244,6 +244,19 @@ submitted. watch with:
 if it goes quiet without producing output:
   python ${PFPL_ROOT}/scripts/status.py
 
+what gates what (--kill-on-invalid-dep=yes, so a REQUIRED failure cancels the
+rest of the chain rather than leaving it queued forever):
+
+  mmseqs ${MM} ---+
+  embed  ${EMB} ---+--> merge ${MERGE} --> baselines ${BASE}
+  ligphys ${LIG} --+  (afterANY: a partial table only weakens the triangle penalty)
+
+  So if merge and baselines vanish from the queue without running, one of
+  mmseqs or embed FAILED - check logs/mmseqs_*.err and logs/embed_*.err, not
+  the merge log, which will not exist. Fix it and re-run this script: every
+  stage skips work that is already complete, so the retry costs only the
+  stage that failed.
+
 key artifacts as they land:
   work/pairs.parquet              the corpus, one row per (protein, ligand)
   work/mmseqs/clusters.tsv        the honest split's input

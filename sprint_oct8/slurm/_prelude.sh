@@ -105,6 +105,30 @@ export HF_HOME HUGGINGFACE_HUB_CACHE TORCH_HOME XDG_CACHE_HOME MPLCONFIGDIR
 export TRITON_CACHE_DIR CUDA_CACHE_PATH NUMBA_CACHE_DIR WANDB_DIR WANDB_CACHE_DIR
 export TMPDIR TMP TEMP
 
+# ---- the ONE deliberate exception: the container runtime's scratch -----------
+# Singularity/Apptainer unpacks the SIF into a FUSE rootfs under TMPDIR. A FUSE
+# mount cannot live on /scratch here - fusermount3 fails with "Permission denied"
+# on both mount and cleanup, and the container never starts:
+#
+#   FATAL: While running host post start tasks: while unmounting fuse directory:
+#          .../work/tmp/rootfs-2049131468/root: exit status 1
+#
+# That is what containing TMPDIR did to the mmseqs job. It needs a LOCAL
+# filesystem, and node-local is correct for it anyway: the rootfs is ephemeral,
+# it is megabytes, and it is meant to vanish when the job ends. Nothing the
+# project produces goes here - TMPDIR itself stays contained, so xtb and every
+# Python tempfile still write under the root.
+: "${PFPL_CONTAINER_TMPDIR:=${SLURM_TMPDIR:-/tmp}/pfpl-${PFPL_USER}-${SLURM_JOB_ID:-$$}}"
+export SINGULARITY_TMPDIR="${PFPL_CONTAINER_TMPDIR}"
+export APPTAINER_TMPDIR="${PFPL_CONTAINER_TMPDIR}"
+mkdir -p "${PFPL_CONTAINER_TMPDIR}" 2>/dev/null || true
+# Leftovers from a killed job would otherwise accumulate on the node.
+pfpl_cleanup_container_tmp() {
+    [ -n "${PFPL_CONTAINER_TMPDIR:-}" ] && rm -rf "${PFPL_CONTAINER_TMPDIR}" 2>/dev/null
+    return 0
+}
+trap pfpl_cleanup_container_tmp EXIT
+
 mkdir -p "${PFPL_LOGS}" "${PFPL_WORK}" "${PFPL_ROOT}/reports" "${PFPL_ROOT}/splits" \
          "${HF_HOME}" "${TORCH_HOME}" "${XDG_CACHE_HOME}" "${MPLCONFIGDIR}" \
          "${TRITON_CACHE_DIR}" "${CUDA_CACHE_PATH}" "${NUMBA_CACHE_DIR}" \
