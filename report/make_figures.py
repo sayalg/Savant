@@ -228,3 +228,60 @@ bare(ax)
 fig.tight_layout()
 fig.savefig(FIG / "fig_label_distribution.png", bbox_inches="tight")
 plt.close(fig)
+
+# --- 8. carbonic anhydrase 2 case study --------------------------------------
+# Structure panels rendered by benchmark_structures/render_panels.pml, composed
+# with the measured and predicted values on a shared axis underneath. Draws
+# labelled placeholders when the panels are absent, so the layout can be checked
+# before the renders exist.
+STRUCT = REPO / "report" / "benchmark_structures"
+
+CASE = [  # ordered weakest -> strongest measured affinity
+    ("CHEMBL6174863", 4.02, 4.37, 4.85),
+    ("CHEMBL6176691", 5.06, 5.10, 5.22),
+    ("CHEMBL6148278", 6.18, 7.04, 7.96),
+    ("CHEMBL6151935", 7.24, 7.20, 6.27),
+    ("CHEMBL6134150", 8.25, 7.22, 7.16),
+]
+ids = [c[0] for c in CASE]
+true = np.array([c[1] for c in CASE])
+sav = np.array([c[2] for c in CASE])
+bz = np.array([c[3] for c in CASE])
+x = np.arange(len(CASE))
+
+fig = plt.figure(figsize=(7.4, 4.6))
+gs = fig.add_gridspec(2, len(CASE), height_ratios=[1.45, 1.0], hspace=0.10, wspace=0.04)
+
+for i, cid in enumerate(ids):
+    ax = fig.add_subplot(gs[0, i])
+    panel = STRUCT / f"panel_{i+1}.png"
+    if panel.exists():
+        ax.imshow(plt.imread(panel))
+    else:
+        ax.add_patch(plt.Rectangle((0.04, 0.04), 0.92, 0.92, fill=False,
+                                   ls="--", lw=1.0, color="#bbb"))
+        ax.text(0.5, 0.5, f"panel_{i+1}.png", ha="center", va="center",
+                fontsize=7, color="#999")
+    ax.set_xticks([]); ax.set_yticks([])
+    for sp in ax.spines.values():
+        sp.set_visible(False)
+    ax.set_title(cid.replace("CHEMBL", "CHEMBL "), fontsize=6.5, color="#444", pad=3)
+
+ax = fig.add_subplot(gs[1, :])
+ax.plot(x, true, "-o", color="#222", lw=1.8, ms=7, label="measured", zorder=3)
+ax.plot(x, sav, "-o", color="#2a78d6", lw=1.6, ms=6, label="Savant", zorder=2)
+ax.plot(x, bz, "-s", color="#e2603a", lw=1.6, ms=5.5, label="Boltz-2", zorder=2)
+for xi, t, s in zip(x, true, sav):
+    ax.plot([xi, xi], [min(t, s), max(t, s)], color="#2a78d6", lw=0.8, alpha=0.35, zorder=1)
+ax.set_xticks(x)
+ax.set_xticklabels([f"{t:.2f}" for t in true], fontsize=8)
+ax.set_xlabel("compound, ordered by measured p$K_d$", fontsize=9)
+ax.set_ylabel("p$K_d$", fontsize=9)
+ax.set_xlim(-0.45, len(CASE) - 0.55)
+ax.set_ylim(3.6, 8.9)
+## lower right: the only quadrant none of the 3 series passes through.
+ax.legend(fontsize=8, frameon=False, ncol=1, loc="lower right")
+bare(ax)
+
+fig.savefig(FIG / "fig_case_study.png", bbox_inches="tight", dpi=300)
+plt.close(fig)
