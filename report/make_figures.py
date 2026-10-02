@@ -1,15 +1,6 @@
 """Figures for report/Article.tex.
 
 Run from anywhere:  python report/make_figures.py
-
-Every figure is restricted to the compared tools and to the model of record
-(`Savant esm650`), so nothing here shows the development variants that the
-write-up deliberately leaves out.
-
-The per-target QSAR and Tanimoto k-NN baselines were dropped from the paper,
-so they are dropped here too: a figure that still plotted them would disagree
-with every table beside it. The crossover figure went with them, since its
-entire content was Savant against those 2 baselines.
 """
 from pathlib import Path
 import numpy as np, pandas as pd
@@ -214,13 +205,10 @@ top = ax.get_ylim()[1]
 ax.set_ylim(0, top * 1.22)
 ## Annotations sit above the tallest bar rather than over it: both classes peak
 ## close to the cut, so anything placed at the axis top overlaps the histogram.
-ax.text(CUT - 0.3, top * 1.10, f"non-binder\n{100*(y<CUT).mean():.1f}%",
+ax.text(CUT - 0.3, top * 1.10, f"non-binders\n{100*(y<CUT).mean():.1f}%",
         ha="right", va="top", fontsize=8.5, color="#6b6459")
-ax.text(CUT + 0.3, top * 1.10, f"binder\n{100*(y>=CUT).mean():.1f}%",
+ax.text(CUT + 0.3, top * 1.10, f"binders\n{100*(y>=CUT).mean():.1f}%",
         ha="left", va="top", fontsize=8.5, color="#1b5fa8")
-ax.annotate(r"p$K_d$ = 6", xy=(CUT, top * 0.55), xytext=(CUT + 1.9, top * 0.72),
-            fontsize=8, color="#222",
-            arrowprops=dict(arrowstyle="->", color="#222", lw=0.9))
 ax.set_xlabel("measured p$K_d$")
 ax.set_ylabel("training pairs")
 ax.set_xlim(0, 13)
@@ -249,8 +237,15 @@ sav = np.array([c[2] for c in CASE])
 bz = np.array([c[3] for c in CASE])
 x = np.arange(len(CASE))
 
-fig = plt.figure(figsize=(7.4, 4.6))
-gs = fig.add_gridspec(2, len(CASE), height_ratios=[1.45, 1.0], hspace=0.10, wspace=0.04)
+## The renders are square and imshow preserves aspect, so a top row taller than
+## one panel is wide just letterboxes each image and opens a gap above the
+## chart. 5 panels across ~7 in of axes makes each ~1.4 in, so the top row is
+## sized to match and the rest of the height goes to the chart.
+FIG_W, PANEL_H = 7.4, 7.0 / len(CASE)
+CHART_H = 2.5
+fig = plt.figure(figsize=(FIG_W, PANEL_H + CHART_H))
+gs = fig.add_gridspec(2, len(CASE), height_ratios=[PANEL_H, CHART_H],
+                      hspace=0.08, wspace=0.03)
 
 for i, cid in enumerate(ids):
     ax = fig.add_subplot(gs[0, i])
@@ -268,11 +263,20 @@ for i, cid in enumerate(ids):
     ax.set_title(cid.replace("CHEMBL", "CHEMBL "), fontsize=6.5, color="#444", pad=3)
 
 ax = fig.add_subplot(gs[1, :])
-ax.plot(x, true, "-o", color="#222", lw=1.8, ms=7, label="measured", zorder=3)
-ax.plot(x, sav, "-o", color="#2a78d6", lw=1.6, ms=6, label="Savant", zorder=2)
-ax.plot(x, bz, "-s", color="#e2603a", lw=1.6, ms=5.5, label="Boltz-2", zorder=2)
-for xi, t, s in zip(x, true, sav):
-    ax.plot([xi, xi], [min(t, s), max(t, s)], color="#2a78d6", lw=0.8, alpha=0.35, zorder=1)
+## Points only, no connecting lines. The 3 series are dodged into their own
+## sub-columns because several values nearly coincide -- measured 7.24 against
+## Savant 7.20, and Savant 7.22 against Boltz-2 7.16 -- so plotting them at a
+## shared x would make larger markers overlap rather than separate.
+DODGE = 0.15
+for off, vals, colr, mark, lab in [
+        (-DODGE, true, "#222222", "o", "measured"),
+        (0.0, sav, "#2a78d6", "o", "Savant"),
+        (DODGE, bz, "#e2603a", "s", "Boltz-2")]:
+    ax.scatter(x + off, vals, s=130, c=colr, marker=mark, label=lab,
+               edgecolor="white", linewidth=0.9, zorder=3)
+## faint column separators, so the eye groups the 3 points per compound
+for xi in x[:-1]:
+    ax.axvline(xi + 0.5, color="#e8e5e0", lw=0.9, zorder=0)
 ax.set_xticks(x)
 ax.set_xticklabels([f"{t:.2f}" for t in true], fontsize=8)
 ax.set_xlabel("compound, ordered by measured p$K_d$", fontsize=9)
