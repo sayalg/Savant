@@ -356,3 +356,78 @@ def test_the_libstdcxx_preload_is_automatic_not_opt_in():
     assert 'CONDA_LIBS_FIRST:-0' not in text, \
         "CONDA_LIBS_FIRST defaults to 0 again, so the preload is opt-in"
     assert 'CONDA_LIBS_FIRST:-auto' in text
+
+
+def test_prelude_survives_a_hostile_environment_and_always_announces_itself(tmp_path):
+    """`./slurm/submit_wave2.sh` became a SILENT no-op: the libstdc++ probe called
+    /sbin/ldconfig directly, which is exit 127 where ldconfig lives in /usr/sbin.
+    Under the `set -euo pipefail` every caller sets, `pipefail` propagated 127 into
+    a command substitution and `set -e` killed the shell - before this file printed
+    anything, so there was no output and no exit message to go on.
+
+    Two invariants: an environment probe may never abort the caller, and the
+    prelude must announce itself BEFORE anything that can fail.
+    """
+    bash = shutil.which("bash")
+    if not bash:
+        pytest.skip("no bash available")
+    root = tmp_path / "root"
+    (root / "slurm").mkdir(parents=True)
+    shutil.copy(ROOT / "slurm" / "_prelude.sh", root / "slurm")
+    shutil.copytree(ROOT / "src", root / "src")
+    ## A conda prefix whose libstdc++ is unreadable, plus an empty PATH segment so
+    ## ldconfig / strings cannot be found: every probe must fail, harmlessly.
+    fake = tmp_path / "env" / "lib"
+    fake.mkdir(parents=True)
+    (fake / "libstdc++.so.6").write_bytes(b"\x7fELF" + b"\x00" * 32)
+    out = subprocess.run(
+        [bash, "-c", 'set -euo pipefail; source "$PFPL_ROOT/slurm/_prelude.sh"; '
+                     'echo REACHED_THE_END'],
+        capture_output=True, text=True,
+        env={**os.environ, "PFPL_ROOT": str(root), "PFPL_WORK": "",
+             "CONDA_PREFIX": str(tmp_path / "env"), "PFPL_SKIP_CONTAIN_CHECK": "1",
+             "SLURM_JOB_ID": "999", "PFPL_ALLOW_EXTERNAL": ""})
+    assert "REACHED_THE_END" in out.stdout, (
+        "the prelude aborted its caller from an environment probe.\n"
+        f"stdout:\n{out.stdout}\nstderr:\n{out.stderr}")
+    assert out.stdout.lstrip().startswith("=="), (
+        "the prelude must print its header FIRST, so a later failure is "
+        f"distinguishable from never having run. Got:\n{out.stdout[:200]}")
+
+
+def test_sourcing_the_prelude_does_not_clobber_the_callers_arguments(tmp_path):
+    """Eight sbatch scripts source the prelude and then pass "$@" to their python
+    script, so anything in here that touches the positional parameters silently
+    rewrites the job's arguments: `sbatch 05_acquire.sbatch --chembl` would become
+    `phase1a_acquire.py <libstdc++ path> 35 30`."""
+    bash = shutil.which("bash")
+    if not bash:
+        pytest.skip("no bash available")
+    root = tmp_path / "root"
+    (root / "slurm").mkdir(parents=True)
+    shutil.copy(ROOT / "slurm" / "_prelude.sh", root / "slurm")
+    shutil.copytree(ROOT / "src", root / "src")
+    lib = tmp_path / "env" / "lib"
+    lib.mkdir(parents=True)
+    ## A conda libstdc++ that IS newer, so the preload branch actually runs.
+    lib.joinpath("libstdc++.so.6").write_bytes(
+        b"\x7fELF" + b"\x00" * 64
+        + b"".join(f"GLIBCXX_3.4.{i}\0".encode() for i in range(14, 36)))
+    script = root / "job.sh"
+    script.write_text('set -euo pipefail\n'
+                      'source "$PFPL_ROOT/slurm/_prelude.sh"\n'
+                      'echo "ARGS:$*"\n', encoding="utf-8")
+    out = subprocess.run(
+        [bash, str(script), "--chembl", "--force"], capture_output=True, text=True,
+        env={**os.environ, "PFPL_ROOT": str(root), "PFPL_WORK": "",
+             "CONDA_PREFIX": str(tmp_path / "env"), "PFPL_SKIP_CONTAIN_CHECK": "1",
+             "PFPL_ALLOW_EXTERNAL": ""})
+    ## The preload branch is the only thing in here that has ever touched the
+    ## positional parameters, so if it did not run this test proves nothing. Skip
+    ## loudly rather than passing vacuously - LD_PRELOAD needs an absolute POSIX
+    ## path, which a Windows tmp_path is not.
+    if "preloading conda's" not in out.stdout:
+        pytest.skip("libstdc++ preload branch did not run in this environment; "
+                    "the assertion would be vacuous")
+    assert "ARGS:--chembl --force" in out.stdout, (
+        f"the prelude rewrote its caller's arguments.\n{out.stdout}\n{out.stderr}")

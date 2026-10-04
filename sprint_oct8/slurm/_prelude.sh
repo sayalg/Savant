@@ -60,6 +60,12 @@ fi
 export PYTHONPATH="${PFPL_ROOT}/src${PYTHONPATH:+:$PYTHONPATH}"
 export PYTHONUNBUFFERED=1
 
+# Print WHO WE ARE as early as possible. Everything below this line can fail, and a
+# failure that happens before the first echo is indistinguishable from the script
+# never having run - which is exactly how a bad ldconfig probe turned
+# `./slurm/submit_wave2.sh` into a silent no-op.
+echo "== $(date '+%F %T')  host $(hostname)  job ${SLURM_JOB_ID:-none}${SLURM_ARRAY_TASK_ID:+ task ${SLURM_ARRAY_TASK_ID}/${SLURM_ARRAY_TASK_COUNT:-?}} =="
+
 # Everything under one root. The env vars exist so a single directory can be moved
 # if a filesystem fills up, but the defaults are all inside PFPL_ROOT so the project
 # is self-contained with nothing set.
@@ -155,29 +161,56 @@ mkdir -p "${PFPL_LOGS}" "${PFPL_WORK}" "${PFPL_ROOT}/reports" "${PFPL_ROOT}/spli
 #     CONDA_LIBS_FIRST=0   off
 #     CONDA_LIBS_FIRST=2   broader, riskier (prepends $CONDA_PREFIX/lib)
 #     (unset / auto)       preload conda's libstdc++ only when it is NEWER
+# This whole block runs in a SUBSHELL with `set +e`, and its result is read back as
+# text. An environment probe must never be able to take the job down with it: the
+# first version called `/sbin/ldconfig` directly, which is exit 127 where ldconfig
+# lives in /usr/sbin, and under the `set -euo pipefail` every caller sets that
+# killed the shell - before this file prints anything, so submit_wave2.sh produced
+# no output whatsoever. Hence also the early header above: silence must be
+# impossible.
 _pfpl_glibcxx_max() {  # highest GLIBCXX_3.4.N a libstdc++ exports, or 0
     local so="$1" v
-    [ -e "$so" ] || { echo 0; return; }
-    v=$( { strings -a "$so" 2>/dev/null || tr -c '[:print:]' '\n' <"$so"; } \
+    [ -r "$so" ] || { echo 0; return 0; }
+    v=$( { strings -a "$so" 2>/dev/null || tr -c '[:print:]' '\n' <"$so" 2>/dev/null; } \
          | sed -n 's/^GLIBCXX_3\.4\.\([0-9][0-9]*\)$/\1/p' | sort -n | tail -1 )
-    echo "${v:-0}"
+    case "$v" in (*[!0-9]*|"") echo 0 ;; (*) echo "$v" ;; esac
+    return 0
+}
+_pfpl_pick_libstdcxx() {  # -> "<path> <conda_ver> <sys_ver>", or nothing
+    set +e
+    local conda_so="${CONDA_PREFIX}/lib/libstdc++.so.6" sys_so cv sv
+    [ -r "$conda_so" ] || return 0
+    ## LD_PRELOAD is only meaningful as an absolute POSIX path. Anything else (a
+    ## Windows-style C:/... under Git Bash, a relative path) makes the dynamic
+    ## loader fail on every subsequent fork, which is far worse than not preloading.
+    case "$conda_so" in (/*) ;; (*) return 0 ;; esac
+    sys_so=$( { command -v ldconfig >/dev/null 2>&1 && ldconfig -p 2>/dev/null; } \
+              | awk '/libstdc\+\+\.so\.6 /{print $NF; exit}' )
+    for c in "$sys_so" /lib64/libstdc++.so.6 /usr/lib64/libstdc++.so.6; do
+        [ -n "$c" ] && [ -r "$c" ] && { sys_so="$c"; break; }
+    done
+    cv=$(_pfpl_glibcxx_max "$conda_so")
+    sv=$(_pfpl_glibcxx_max "${sys_so:-}")
+    ## Both must be real numbers and conda's strictly newer, or we do nothing.
+    [ "$cv" -gt 0 ] 2>/dev/null || return 0
+    [ "$cv" -gt "$sv" ] 2>/dev/null || return 0
+    echo "$conda_so $cv $sv"
 }
 if [ -n "${CONDA_PREFIX:-}" ]; then
     case "${CONDA_LIBS_FIRST:-auto}" in
         0) : ;;
         2) export LD_LIBRARY_PATH="${CONDA_PREFIX}/lib:${LD_LIBRARY_PATH:-}" ;;
-        *) _pfpl_conda_so="${CONDA_PREFIX}/lib/libstdc++.so.6"
-           if [ -e "$_pfpl_conda_so" ]; then
-               _pfpl_sys_so=$(/sbin/ldconfig -p 2>/dev/null \
-                   | awk '/libstdc\+\+\.so\.6 /{print $NF; exit}')
-               : "${_pfpl_sys_so:=/lib64/libstdc++.so.6}"
-               _pfpl_cv=$(_pfpl_glibcxx_max "$_pfpl_conda_so")
-               _pfpl_sv=$(_pfpl_glibcxx_max "$_pfpl_sys_so")
-               if [ "${_pfpl_cv:-0}" -gt "${_pfpl_sv:-0}" ]; then
-                   export LD_PRELOAD="${_pfpl_conda_so}${LD_PRELOAD:+:$LD_PRELOAD}"
-                   echo "   libstdc++  preloading conda's (GLIBCXX_3.4.${_pfpl_cv}" \
-                        "> node's 3.4.${_pfpl_sv})"
-               fi
+        *) _pfpl_pick=$( _pfpl_pick_libstdcxx ) || _pfpl_pick=""
+           if [ -n "${_pfpl_pick:-}" ]; then
+               ## `read`, NOT `set --`. This file is SOURCED, so `set --` would
+               ## overwrite the caller's positional parameters - and eight sbatch
+               ## scripts pass "$@" through to their python script afterwards, so
+               ## `sbatch slurm/05_acquire.sbatch --chembl` would have become
+               ## `phase1a_acquire.py <libstdc++ path> 35 30`.
+               read -r _pfpl_so _pfpl_cv _pfpl_sv <<<"${_pfpl_pick}" || true
+               export LD_PRELOAD="${_pfpl_so}${LD_PRELOAD:+:$LD_PRELOAD}"
+               echo "   libstdc++  preloading conda's (GLIBCXX_3.4.${_pfpl_cv}" \
+                    "> node's 3.4.${_pfpl_sv})"
            fi ;;
     esac
 fi
@@ -194,7 +227,6 @@ fi
 
 export OMP_NUM_THREADS="${OMP_NUM_THREADS:-${SLURM_CPUS_PER_TASK:-4}}"
 
-echo "== $(date '+%F %T')  host $(hostname)  job ${SLURM_JOB_ID:-none}${SLURM_ARRAY_TASK_ID:+ task ${SLURM_ARRAY_TASK_ID}/${SLURM_ARRAY_TASK_COUNT:-?}} =="
 echo "   PFPL_ROOT=${PFPL_ROOT}"
 echo "   PFPL_WORK=${PFPL_WORK}"
 echo "   TMPDIR   =${TMPDIR}"
