@@ -319,3 +319,40 @@ def test_prelude_keeps_the_container_rootfs_off_the_shared_filesystem(tmp_path):
         assert v and not Path(v).as_posix().startswith(root.as_posix()), \
             f"{name}={v!r} is under the shared root; FUSE cannot unmount there"
     assert sing == appt
+
+
+def test_every_launcher_that_runs_python_sources_the_prelude():
+    """submit_wave2.sh ran the Phase 7 selftest on the login node WITHOUT the
+    prelude, so it got none of the environment every sbatch job gets - and died on
+    "GLIBCXX_3.4.31 not found" from optree's _C.so. Worse, the documented
+    workaround (CONDA_LIBS_FIRST=1) is read inside the prelude, so passing it on
+    the command line changed nothing.
+
+    Any launcher that invokes an interpreter itself must source the prelude first.
+    """
+    import re
+    offenders = []
+    for p in sorted((ROOT / "slurm").glob("*.sh")):
+        if p.name == "_prelude.sh":
+            continue                 # it IS the prelude; it cannot source itself
+        text = p.read_text(encoding="utf-8")
+        ## Strip comments and heredoc bodies: a `python ...` inside a usage message
+        ## or an sbatch --wrap body is not this launcher running python.
+        code = "\n".join(ln for ln in text.splitlines()
+                         if not ln.lstrip().startswith("#"))
+        runs_python = re.search(r"(?m)^\s*(python3?|\$\{?PYTHON)\b", code)
+        if runs_python and "slurm/_prelude.sh" not in code:
+            offenders.append(p.name)
+    assert not offenders, (
+        f"{offenders} run python without sourcing slurm/_prelude.sh; they will miss "
+        "the libstdc++ preload, the cache containment and PYTHONPATH")
+
+
+def test_the_libstdcxx_preload_is_automatic_not_opt_in():
+    """It was opt-in and therefore forgotten. The decision is made by comparing
+    versions, which a human cannot be expected to do at every submit."""
+    text = (ROOT / "slurm" / "_prelude.sh").read_text(encoding="utf-8")
+    assert "_pfpl_glibcxx_max" in text, "no version comparison - the fix is a guess"
+    assert 'CONDA_LIBS_FIRST:-0' not in text, \
+        "CONDA_LIBS_FIRST defaults to 0 again, so the preload is opt-in"
+    assert 'CONDA_LIBS_FIRST:-auto' in text

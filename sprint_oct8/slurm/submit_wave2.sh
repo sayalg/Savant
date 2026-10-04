@@ -25,9 +25,13 @@ if [ ! -d "${PFPL_ROOT}/src/pfpl" ]; then
     echo "run this from the project root, or set PFPL_ROOT=/abs/path" >&2
     exit 1
 fi
-export PFPL_ROOT PYTHONPATH="${PFPL_ROOT}/src${PYTHONPATH:+:$PYTHONPATH}"
-: "${PFPL_WORK:=${PFPL_ROOT}/work}"
-export PFPL_WORK
+# This launcher runs python ITSELF on the login node - the Phase 7 selftest and the
+# grid enumeration - so it needs the same environment the sbatch scripts get. It did
+# not source this before, which is why the selftest died on
+# "GLIBCXX_3.4.31 not found" (optree's _C.so) while every sbatch job was fine, and
+# why CONDA_LIBS_FIRST=1 on the command line changed nothing: the variable is read
+# here, in a file that was never loaded.
+source "${PFPL_ROOT}/slurm/_prelude.sh"
 mkdir -p "${PFPL_ROOT}/logs"
 
 DRY="${DRY:-0}"

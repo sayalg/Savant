@@ -26,7 +26,7 @@
 #   DRY=1 ./slurm/submit_wave1.sh              # print, do not submit
 #   N_EMBED=11 N_LIGPHYS=19 ./slurm/submit_wave1.sh
 #   PDBBIND=/other/dir ./slurm/submit_wave1.sh   # default: work/data/raw/pdbbind
-#   CONDA_LIBS_FIRST=1 ./slurm/submit_wave1.sh  # see slurm/_prelude.sh
+#   CONDA_LIBS_FIRST=0 ./slurm/submit_wave1.sh  # disable the libstdc++ preload
 set -euo pipefail
 
 : "${PFPL_ROOT:=${SLURM_SUBMIT_DIR:-$PWD}}"
@@ -34,9 +34,10 @@ if [ ! -d "${PFPL_ROOT}/src/pfpl" ]; then
     echo "run this from the project root, or set PFPL_ROOT=/abs/path" >&2
     exit 1
 fi
-export PFPL_ROOT
-: "${PFPL_WORK:=${PFPL_ROOT}/work}"
-export PFPL_WORK
+# Same reason as submit_wave2.sh: this launcher runs python on the login node (the
+# acquisition and corpus-freshness checks below), so it needs the sbatch
+# environment - including the automatic libstdc++ preload.
+source "${PFPL_ROOT}/slurm/_prelude.sh"
 mkdir -p "${PFPL_ROOT}/logs" "${PFPL_WORK}"
 
 DRY="${DRY:-0}"

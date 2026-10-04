@@ -146,13 +146,39 @@ mkdir -p "${PFPL_LOGS}" "${PFPL_WORK}" "${PFPL_ROOT}/reports" "${PFPL_ROOT}/spli
 # fix - it redirects only libstdc++ and cannot shadow the CUDA driver libraries the
 # way prepending $CONDA_PREFIX/lib to LD_LIBRARY_PATH can.
 #
-#     CONDA_LIBS_FIRST=1 ./slurm/submit_wave1.sh     # preload libstdc++ only
-#     CONDA_LIBS_FIRST=2 ./slurm/submit_wave1.sh     # broader, riskier
+# AUTOMATIC as of 2026-10-04, not opt-in. It had to be remembered at every submit,
+# and it was forgotten - optree's _C.so brought the Wave 2 selftest down with
+# exactly this error. Deciding it by comparing versions is strictly better than
+# asking a human to remember a flag, and it is a no-op when the node's library is
+# already new enough.
+#
+#     CONDA_LIBS_FIRST=0   off
+#     CONDA_LIBS_FIRST=2   broader, riskier (prepends $CONDA_PREFIX/lib)
+#     (unset / auto)       preload conda's libstdc++ only when it is NEWER
+_pfpl_glibcxx_max() {  # highest GLIBCXX_3.4.N a libstdc++ exports, or 0
+    local so="$1" v
+    [ -e "$so" ] || { echo 0; return; }
+    v=$( { strings -a "$so" 2>/dev/null || tr -c '[:print:]' '\n' <"$so"; } \
+         | sed -n 's/^GLIBCXX_3\.4\.\([0-9][0-9]*\)$/\1/p' | sort -n | tail -1 )
+    echo "${v:-0}"
+}
 if [ -n "${CONDA_PREFIX:-}" ]; then
-    case "${CONDA_LIBS_FIRST:-0}" in
-        1) [ -e "${CONDA_PREFIX}/lib/libstdc++.so.6" ] && \
-             export LD_PRELOAD="${CONDA_PREFIX}/lib/libstdc++.so.6${LD_PRELOAD:+:$LD_PRELOAD}" ;;
+    case "${CONDA_LIBS_FIRST:-auto}" in
+        0) : ;;
         2) export LD_LIBRARY_PATH="${CONDA_PREFIX}/lib:${LD_LIBRARY_PATH:-}" ;;
+        *) _pfpl_conda_so="${CONDA_PREFIX}/lib/libstdc++.so.6"
+           if [ -e "$_pfpl_conda_so" ]; then
+               _pfpl_sys_so=$(/sbin/ldconfig -p 2>/dev/null \
+                   | awk '/libstdc\+\+\.so\.6 /{print $NF; exit}')
+               : "${_pfpl_sys_so:=/lib64/libstdc++.so.6}"
+               _pfpl_cv=$(_pfpl_glibcxx_max "$_pfpl_conda_so")
+               _pfpl_sv=$(_pfpl_glibcxx_max "$_pfpl_sys_so")
+               if [ "${_pfpl_cv:-0}" -gt "${_pfpl_sv:-0}" ]; then
+                   export LD_PRELOAD="${_pfpl_conda_so}${LD_PRELOAD:+:$LD_PRELOAD}"
+                   echo "   libstdc++  preloading conda's (GLIBCXX_3.4.${_pfpl_cv}" \
+                        "> node's 3.4.${_pfpl_sv})"
+               fi
+           fi ;;
     esac
 fi
 
