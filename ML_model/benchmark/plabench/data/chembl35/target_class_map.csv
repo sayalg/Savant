@@ -1,0 +1,85 @@
+UniProt_ID,Target_class,source
+C7C422,Hydrolase,manual_uniprot
+O00444,Kinase,s8
+O14757,Kinase,s8
+O43570,Lyase,s8
+O60341,Epigenetic regulator,s8
+O60674,Kinase,s8
+O60885,Epigenetic regulator,s8
+O75116,Kinase,s8
+O75874,Oxidoreductase,manual_uniprot
+O94925,Hydrolase,s8
+O96028,Epigenetic regulator,manual_uniprot
+P00533,Kinase,s8
+P00915,Lyase,s8
+P00918,Lyase,s8
+P01116,Hydrolase,s8
+P03372,Transcription factor,s8
+P03951,Protease,s8
+P04629,Kinase,s8
+P06276,Hydrolase,s8
+P07333,Kinase,manual_uniprot
+P08183,Transporter,manual_uniprot
+P08684,Cytochrome p450,manual_uniprot
+P08908,Family A G protein-coupled receptor,s8
+P09874,Transferase,s8
+P0DTD1,Transferase,s8
+P10275,Transcription factor,manual_uniprot
+P14416,Family A G protein-coupled receptor,s8
+P17931,Unclassified protein,manual_uniprot
+P21728,Family A G protein-coupled receptor,s8
+P22303,Hydrolase,s8
+P23458,Kinase,s8
+P24941,Kinase,manual_uniprot
+P27338,Oxidoreductase,s8
+P28223,Family A G protein-coupled receptor,s8
+P28335,Family A G protein-coupled receptor,manual_uniprot
+P28907,Hydrolase|Transferase,manual_uniprot
+P29274,Family A G protein-coupled receptor,s8
+P29597,Kinase,s8
+P31153,Transferase,s8
+P34913,Hydrolase,manual_uniprot
+P34972,Family A G protein-coupled receptor,manual_uniprot
+P35372,Family A G protein-coupled receptor,s8
+P35408,Family A G protein-coupled receptor,s8
+P35462,Family A G protein-coupled receptor,s8
+P36544,Ion channel,manual_uniprot
+P37231,Transcription factor,manual_uniprot
+P41143,Family A G protein-coupled receptor,s8
+P41145,Family A G protein-coupled receptor,s8
+P42330,Oxidoreductase,s8
+P42336,Transferase,s8
+P42345,Kinase,s8
+P42866,Family A G protein-coupled receptor,manual_uniprot
+P43166,Lyase,s8
+P43490,Unclassified protein,s8
+P45983,Kinase,s8
+P49759,Kinase,s8
+P49841,Kinase,s8
+P50406,Family A G protein-coupled receptor,s8
+P51449,Transcription factor,s8
+P52333,Kinase,s8
+P53350,Kinase,s8
+P53779,Kinase,s8
+Q00987,Other nuclear protein,s8
+Q02127,Oxidoreductase,s8
+Q03111,Epigenetic regulator,s8
+Q03181,Transcription factor,s8
+Q06124,Phosphatase,s8
+Q06187,Kinase,s8
+Q12809,Ion channel,manual_uniprot
+Q13546,Kinase,s8
+Q13547,Epigenetic regulator,s8
+Q13627,Kinase,s8
+Q15910,Epigenetic regulator,manual_uniprot
+Q16769,Transferase,manual_uniprot
+Q16790,Lyase,s8
+Q72547,Hydrolase,s8
+Q92630,Kinase,s8
+Q92769,Epigenetic regulator,s8
+Q92918,Kinase,s8
+Q96P20,Unclassified protein,s8
+Q96SW2,Unclassified protein,s8
+Q99538,Protease,manual_uniprot
+Q9NXA8,Epigenetic regulator,manual_uniprot
+Q9Y463,Kinase,s8

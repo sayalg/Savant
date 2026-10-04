@@ -1,0 +1,36 @@
+[19:08:32] PLABench filtered set: 4,862 pairs, 3,646 unique ligands
+[19:08:33]   3,646 test ligands fingerprinted
+[19:08:33] fingerprinting the training corpus from input.csv (slow, cached after)
+[19:08:38]   991,876 unique training ligands
+[19:16:33]   991,871 fingerprinted
+[19:16:40] computing max Tanimoto for 3,646 test vs 991,871 training
+[19:16:47]     2.0%  (8s)
+[19:17:25]    12.1%  (45s)
+[19:18:03]    22.2%  (83s)
+[19:18:41]    32.3%  (121s)
+[19:19:19]    42.3%  (159s)
+[19:19:57]    52.4%  (197s)
+[19:20:35]    62.5%  (235s)
+[19:21:13]    72.6%  (273s)
+[19:21:51]    82.7%  (311s)
+[19:22:29]    92.8%  (350s)
+
+================ RESULT ================
+ligands audited                 : 3,646
+  InChIKey skeleton in training : 0 (0.0%)
+  max Tanimoto >= 0.50          : 1,900 (52.1%)
+  fails Savant's gate           : 1,900 (52.1%)
+pairs affected                  : 2,833 of 4,862 (58.3%)
+
+max-Tanimoto distribution: median 0.502  mean 0.521  p95 0.750  max 0.849
+  >= 0.90:     0
+  >= 0.85:     0
+  >= 0.70:   360
+  >= 0.50:  1900
+  >= 0.40:  2987
+
+note: PLABench's own gate is 0.85; anything at or above that in the rows above
+is a ligand their filter should have removed for their 14 corpora but which
+remains close to OURS.
+
+per-ligand detail -> C:\Users\sayal\Documents\GitHub\Savant\ML_model\benchmark\plabench\output\contamination_audit.csv

@@ -1,0 +1,47 @@
+[18:37:43] 4,862 pairs | 71 targets | 3,646 ligands
+base_score came back as 0.5, restored to 6.466394 from the file
+[18:37:45] loaded Savant(model='esm650', features=2935, esm_model='facebook/esm2_t33_650M_UR50D', classifier=no)
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+Loading weights:   0%|          | 0/53 [00:00<?, ?it/s]Loading weights: 100%|##########| 53/53 [00:00<00:00, 42455.71it/s]
+[transformers] [1mRobertaModel LOAD REPORT[0m from: DeepChem/ChemBERTa-77M-MLM
+Key                       | Status     | 
+--------------------------+------------+-
+lm_head.bias              | UNEXPECTED | 
+lm_head.dense.bias        | UNEXPECTED | 
+lm_head.decoder.weight    | UNEXPECTED | 
+lm_head.decoder.bias      | UNEXPECTED | 
+lm_head.dense.weight      | UNEXPECTED | 
+lm_head.layer_norm.bias   | UNEXPECTED | 
+lm_head.layer_norm.weight | UNEXPECTED | 
+pooler.dense.bias         | MISSING    | 
+pooler.dense.weight       | MISSING    | 
+
+Notes:
+- UNEXPECTED:	can be ignored when loading from different task/architecture; not ok if you expect identical arch.
+- MISSING:	those params were newly initialized because missing from the checkpoint. Consider training on your downstream task.
+Loading weights:   0%|          | 0/534 [00:00<?, ?it/s]Loading weights: 100%|##########| 534/534 [00:00<00:00, 18002.32it/s]
+[transformers] [1mEsmModel LOAD REPORT[0m from: facebook/esm2_t33_650M_UR50D
+Key                       | Status     | 
+--------------------------+------------+-
+lm_head.bias              | UNEXPECTED | 
+lm_head.dense.bias        | UNEXPECTED | 
+lm_head.dense.weight      | UNEXPECTED | 
+lm_head.layer_norm.bias   | UNEXPECTED | 
+lm_head.layer_norm.weight | UNEXPECTED | 
+pooler.dense.bias         | MISSING    | 
+pooler.dense.weight       | MISSING    | 
+
+Notes:
+- UNEXPECTED:	can be ignored when loading from different task/architecture; not ok if you expect identical arch.
+- MISSING:	those params were newly initialized because missing from the checkpoint. Consider training on your downstream task.
+[18:38:18]   10/71 targets, 743 pairs, 34s elapsed
+[18:39:08]   20/71 targets, 1,712 pairs, 83s elapsed
+[18:48:02]   30/71 targets, 2,939 pairs, 618s elapsed
+[18:52:58]   40/71 targets, 3,301 pairs, 913s elapsed
+[18:53:18]   50/71 targets, 3,737 pairs, 934s elapsed
+[18:53:39]   60/71 targets, 4,206 pairs, 955s elapsed
+[18:54:05]   70/71 targets, 4,826 pairs, 981s elapsed
+[18:54:07]   71/71 targets, 4,862 pairs, 982s elapsed
+[18:54:07] wrote C:\Users\sayal\Documents\GitHub\Savant\ML_model\benchmark\plabench\output\savant_chembl35_filtered.csv  (4,862 rows)
+[18:54:07] 982s total, 202.0 ms per pair (71 protein encodings amortised across them)
+[18:54:07] quick look: pooled r 0.4943  RMSE 1.0399  pred sd/true sd 0.616
