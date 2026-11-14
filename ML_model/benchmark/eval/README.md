@@ -23,6 +23,10 @@ of record** is the `savant` package, run from sequence and SMILES alone by
 `score_savant_benchmark.ipynb`, which writes `savant_esm650_pk`. Every number in
 the paper is the `esm650` column.
 
+`savant_structure_based/` is not part of this repository, so steps `04` and `05`
+cannot be re-run here; their columns are already in `output/`. Everything else,
+including the model of record, runs from this repository alone.
+
 ## The chain contract
 
 Savant is invoked as `-p A -l B` and PRODIGY-LIG as `-c A B:LIG`. Both therefore

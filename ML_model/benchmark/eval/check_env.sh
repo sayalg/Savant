@@ -29,7 +29,7 @@ file() {
 echo "== executables =="
 have boltz       "pip install boltz[cuda] -U"
 have savant      "poetry install / pip install -e . at the repo root"
-have haddock3    "hard dependency of Savant, Linux only"
+have haddock3    "steps 04-05 only (structure-based arm, not in this repo), Linux only"
 have prodigy_lig "pip install prodigy-lig"
 
 echo
@@ -41,7 +41,6 @@ pymod numpy  "needed by step 06"
 echo
 echo "== inputs =="
 file "${BENCHMARK_CSV:-../output/savant_benchmark.csv}"
-file "../../models_structure_free"      # structure-based .pkl models live here
 file "../../models_full"                # savant (the model of record) lives here
 echo "  boltz cache                  ${BOLTZ_CACHE:-$HOME/.boltz}"
 if [ -d "${BOLTZ_CACHE:-$HOME/.boltz}" ]; then

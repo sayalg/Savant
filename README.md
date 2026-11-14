@@ -227,8 +227,10 @@ already-encoded target costs only descriptor computation and tree inference.
 | [`savant/`](savant/) | the tool; [`savant/README.md`](savant/README.md) covers the package internals |
 | `ML_model/models_full/` | the trained model bundles |
 | `ML_model/`, `Scripts/` | training data preparation, model training, and the evaluation benchmark |
-| `savant_structure_based/` | an earlier variant that consumes docked HADDOCK3 energetics |
-| `report/` | the manuscript and its figures |
+
+## License
+
+MIT. See [`LICENSE`](LICENSE).
 
 ## Citation
 
